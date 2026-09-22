@@ -7,12 +7,21 @@ public final class Payment {
     private final PaymentId id;
     private final PaymentIntent intent;
     private final IdempotencyKey idempotencyKey;
-    private PaymentStatus status = PaymentStatus.CREATED;
+    private PaymentStatus status;
 
     public Payment(PaymentId id, PaymentIntent intent, IdempotencyKey idempotencyKey) {
+        this(id, intent, idempotencyKey, PaymentStatus.CREATED);
+    }
+
+    private Payment(PaymentId id, PaymentIntent intent, IdempotencyKey idempotencyKey, PaymentStatus status) {
         this.id = Objects.requireNonNull(id, "id");
         this.intent = Objects.requireNonNull(intent, "intent");
         this.idempotencyKey = Objects.requireNonNull(idempotencyKey, "idempotencyKey");
+        this.status = Objects.requireNonNull(status, "status");
+    }
+
+    static Payment rehydrate(PaymentId id, PaymentIntent intent, IdempotencyKey idempotencyKey, PaymentStatus status) {
+        return new Payment(id, intent, idempotencyKey, status);
     }
 
     public PaymentId id() {
