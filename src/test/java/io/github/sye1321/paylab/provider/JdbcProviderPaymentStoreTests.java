@@ -17,6 +17,7 @@ import org.springframework.test.context.DynamicPropertySource;
 import org.testcontainers.postgresql.PostgreSQLContainer;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -114,6 +115,89 @@ class JdbcProviderPaymentStoreTests {
             start.countDown();
             executor.shutdownNow();
             assertTrue(executor.awaitTermination(10, TimeUnit.SECONDS));
+        }
+    }
+
+    @Test
+    void processingAndSuccessTransitionsPersist() {
+        Payment created = store.createOrResolve(key(), intent(100, "USD", "order-1"));
+
+        Payment processing = store.startProcessing(created.id());
+        assertEquals(PaymentStatus.PROCESSING, processing.status());
+        assertEquals(PaymentStatus.PROCESSING, store.findById(created.id()).orElseThrow().status());
+
+        Payment succeeded = store.markSucceeded(created.id());
+        assertEquals(PaymentStatus.SUCCEEDED, succeeded.status());
+        assertEquals(PaymentStatus.SUCCEEDED, store.findById(created.id()).orElseThrow().status());
+    }
+
+    @Test
+    void failureTransitionPersists() {
+        Payment created = store.createOrResolve(key(), intent(100, "USD", "order-1"));
+        store.startProcessing(created.id());
+
+        Payment failed = store.markFailed(created.id());
+
+        assertEquals(PaymentStatus.FAILED, failed.status());
+        assertEquals(PaymentStatus.FAILED, store.findById(created.id()).orElseThrow().status());
+    }
+
+    @Test
+    void illegalTransitionDoesNotChangeStoredStatusAndMissingPaymentIsDistinct() {
+        Payment created = store.createOrResolve(key(), intent(100, "USD", "order-1"));
+
+        assertThrows(IllegalPaymentTransitionException.class, () -> store.markSucceeded(created.id()));
+        assertEquals(PaymentStatus.CREATED, store.findById(created.id()).orElseThrow().status());
+
+        store.startProcessing(created.id());
+        assertThrows(IllegalPaymentTransitionException.class, () -> store.startProcessing(created.id()));
+        assertEquals(PaymentStatus.PROCESSING, store.findById(created.id()).orElseThrow().status());
+
+        assertThrows(PaymentNotFoundException.class,
+                () -> store.startProcessing(new PaymentId(UUID.randomUUID().toString())));
+    }
+
+    @Test
+    void concurrentTerminalTransitionsCannotOverwriteEachOther() throws Exception {
+        Payment created = store.createOrResolve(key(), intent(100, "USD", "order-1"));
+        store.startProcessing(created.id());
+        CountDownLatch ready = new CountDownLatch(2);
+        CountDownLatch start = new CountDownLatch(1);
+        ExecutorService executor = Executors.newFixedThreadPool(2);
+        try {
+            Callable<Object> success = () -> terminalAttempt(ready, start, () -> store.markSucceeded(created.id()));
+            Callable<Object> failure = () -> terminalAttempt(ready, start, () -> store.markFailed(created.id()));
+            Future<Object> first = executor.submit(success);
+            Future<Object> second = executor.submit(failure);
+            assertTrue(ready.await(10, TimeUnit.SECONDS));
+            start.countDown();
+
+            Object firstResult = first.get(30, TimeUnit.SECONDS);
+            Object secondResult = second.get(30, TimeUnit.SECONDS);
+            assertTrue((firstResult instanceof Payment && secondResult instanceof IllegalPaymentTransitionException)
+                    || (secondResult instanceof Payment && firstResult instanceof IllegalPaymentTransitionException));
+
+            Payment winner = assertInstanceOf(Payment.class,
+                    firstResult instanceof Payment ? firstResult : secondResult);
+            assertEquals(winner.status(), store.findById(created.id()).orElseThrow().status());
+            assertTrue(winner.status() == PaymentStatus.SUCCEEDED || winner.status() == PaymentStatus.FAILED);
+        } finally {
+            start.countDown();
+            executor.shutdownNow();
+            assertTrue(executor.awaitTermination(10, TimeUnit.SECONDS));
+        }
+    }
+
+    private static Object terminalAttempt(CountDownLatch ready, CountDownLatch start,
+            Callable<Payment> transition) throws Exception {
+        ready.countDown();
+        if (!start.await(10, TimeUnit.SECONDS)) {
+            throw new IllegalStateException("Concurrent start timed out");
+        }
+        try {
+            return transition.call();
+        } catch (IllegalPaymentTransitionException conflict) {
+            return conflict;
         }
     }
 

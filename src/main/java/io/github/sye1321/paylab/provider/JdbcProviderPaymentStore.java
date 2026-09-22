@@ -5,6 +5,7 @@ import java.sql.SQLException;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.UUID;
+import java.util.function.Consumer;
 
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Repository;
@@ -37,6 +38,38 @@ public class JdbcProviderPaymentStore {
                 SELECT payment_id, idempotency_key, amount_minor_units, currency, merchant_reference, status
                 FROM provider_payments WHERE payment_id = ?
                 """, JdbcProviderPaymentStore::readPayment, id.value()).stream().findFirst();
+    }
+
+    public Payment startProcessing(PaymentId id) {
+        return transition(id, Payment::startProcessing);
+    }
+
+    public Payment markSucceeded(PaymentId id) {
+        return transition(id, Payment::succeed);
+    }
+
+    public Payment markFailed(PaymentId id) {
+        return transition(id, Payment::fail);
+    }
+
+    private Payment transition(PaymentId id, Consumer<Payment> operation) {
+        Objects.requireNonNull(id, "id");
+        return Objects.requireNonNull(transaction.execute(status -> {
+            Payment payment = findById(id).orElseThrow(() -> new PaymentNotFoundException(id));
+            PaymentStatus expected = payment.status();
+            operation.accept(payment);
+
+            int updated = jdbc.update("""
+                    UPDATE provider_payments SET status = ?
+                    WHERE payment_id = ? AND status = ?
+                    """, payment.status().name(), id.value(), expected.name());
+            if (updated == 1) {
+                return payment;
+            }
+
+            Payment current = findById(id).orElseThrow(() -> new PaymentNotFoundException(id));
+            throw new IllegalPaymentTransitionException(current.status(), payment.status());
+        }));
     }
 
     private Payment createOrResolveInTransaction(IdempotencyKey key, PaymentIntent intent) {
