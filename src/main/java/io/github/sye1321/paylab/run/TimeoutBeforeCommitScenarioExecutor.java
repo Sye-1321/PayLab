@@ -28,6 +28,7 @@ public class TimeoutBeforeCommitScenarioExecutor {
         }
 
         PaymentCreationResult creation = payments.createOrResolve(run.runId(), key, intent);
+        events.appendPaymentRequestResolved(run.runId(), key, intent.fingerprint(), creation.payment().id());
         Payment succeeded = progressor.progress(run.runId(), creation.payment());
         if (creation.created()) {
             events.appendPaymentCommitted(run.runId(), succeeded.id());

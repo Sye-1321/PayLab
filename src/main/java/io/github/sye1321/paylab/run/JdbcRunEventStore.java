@@ -31,6 +31,16 @@ public class JdbcRunEventStore {
                 """, runId.value(), RunEventType.MERCHANT_REQUEST_OBSERVED.name(), key.value(), fingerprint);
     }
 
+    public void appendPaymentRequestResolved(TestRunId runId, IdempotencyKey key,
+            String requestFingerprint, PaymentId paymentId) {
+        jdbc.update("""
+                INSERT INTO run_events
+                    (run_id, event_type, idempotency_key, request_fingerprint, payment_id)
+                VALUES (?, ?, ?, ?, ?)
+                """, runId.value(), RunEventType.PAYMENT_REQUEST_RESOLVED.name(), key.value(),
+                requestFingerprint, paymentId.value());
+    }
+
     public boolean tryAppendPreCommitTimeoutInjected(TestRunId runId, IdempotencyKey key,
             String fingerprint, int responseDelayMillis) {
         return !jdbc.query("""

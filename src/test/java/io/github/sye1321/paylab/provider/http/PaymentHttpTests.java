@@ -106,7 +106,7 @@ class PaymentHttpTests {
         assertEquals("SUCCEEDED", body.get("status").asText());
         assertFalse(body.has("requestFingerprint"));
         JsonNode events = getEvents();
-        assertEquals(3, events.size());
+        assertEquals(4, events.size());
         JsonNode observed = events.get(1);
         assertEquals("MERCHANT_REQUEST_OBSERVED", observed.get("eventType").asText());
         assertEquals(key, observed.get("idempotencyKey").asText());
@@ -115,6 +115,12 @@ class PaymentHttpTests {
         assertEquals(observed.get("requestFingerprint").asText(), jdbc.queryForObject(
                 "SELECT request_fingerprint FROM provider_payments WHERE payment_id = ?", String.class,
                 body.get("paymentId").asText()));
+        JsonNode resolved = events.get(2);
+        assertEquals("PAYMENT_REQUEST_RESOLVED", resolved.get("eventType").asText());
+        assertEquals(key, resolved.get("idempotencyKey").asText());
+        assertEquals(observed.get("requestFingerprint").asText(), resolved.get("requestFingerprint").asText());
+        assertEquals(body.get("paymentId").asText(), resolved.get("paymentId").asText());
+        assertTrue(observed.get("eventId").asLong() < resolved.get("eventId").asLong());
         assertEquals("SUCCEEDED", JSON.readTree(get(body.get("paymentId").asText()).body())
                 .get("status").asText());
         assertEquals(1L, count("webhook_events"));
@@ -124,7 +130,7 @@ class PaymentHttpTests {
                 JOIN webhook_events e ON e.event_id = d.event_id
                 WHERE e.run_id = ? AND e.payment_id = ?
                 """, String.class, UUID.fromString(runId), body.get("paymentId").asText()));
-        assertEquals("WEBHOOK_SCHEDULED", events.get(2).get("eventType").asText());
+        assertEquals("WEBHOOK_SCHEDULED", events.get(3).get("eventType").asText());
     }
 
     @Test
@@ -171,20 +177,27 @@ class PaymentHttpTests {
                 JSON.readTree(replay.body()).get("paymentId").asText());
         assertEquals("SUCCEEDED", JSON.readTree(replay.body()).get("status").asText());
         JsonNode events = getEvents();
-        assertEquals(4, events.size());
+        assertEquals(6, events.size());
         assertEquals("RUN_STARTED", events.get(0).get("eventType").asText());
         assertEquals("MERCHANT_REQUEST_OBSERVED", events.get(1).get("eventType").asText());
-        assertEquals("WEBHOOK_SCHEDULED", events.get(2).get("eventType").asText());
-        assertEquals("MERCHANT_REQUEST_OBSERVED", events.get(3).get("eventType").asText());
+        assertEquals("PAYMENT_REQUEST_RESOLVED", events.get(2).get("eventType").asText());
+        assertEquals("WEBHOOK_SCHEDULED", events.get(3).get("eventType").asText());
+        assertEquals("MERCHANT_REQUEST_OBSERVED", events.get(4).get("eventType").asText());
+        assertEquals("PAYMENT_REQUEST_RESOLVED", events.get(5).get("eventType").asText());
         assertEquals(key, events.get(1).get("idempotencyKey").asText());
-        assertEquals(key, events.get(3).get("idempotencyKey").asText());
+        assertEquals(key, events.get(2).get("idempotencyKey").asText());
+        assertEquals(key, events.get(4).get("idempotencyKey").asText());
+        assertEquals(key, events.get(5).get("idempotencyKey").asText());
         assertEquals(events.get(1).get("requestFingerprint").asText(),
-                events.get(3).get("requestFingerprint").asText());
+                events.get(5).get("requestFingerprint").asText());
+        assertEquals(events.get(2).get("paymentId").asText(), events.get(5).get("paymentId").asText());
+        assertFalse(events.get(2).get("eventId").asLong() == events.get(5).get("eventId").asLong());
         assertEquals(1L, count("provider_payments"));
         assertEquals(1L, count("webhook_events"));
         assertEquals(1L, count("webhook_deliveries"));
         assertEquals(1, eventCount(events, "WEBHOOK_SCHEDULED"));
         assertEquals(2, eventCount(events, "MERCHANT_REQUEST_OBSERVED"));
+        assertEquals(2, eventCount(events, "PAYMENT_REQUEST_RESOLVED"));
     }
 
     @Test
@@ -200,7 +213,9 @@ class PaymentHttpTests {
 
         assertEquals(409, conflict.statusCode());
         assertEquals("IDEMPOTENCY_CONFLICT", JSON.readTree(conflict.body()).get("code").asText());
-        assertEquals(4, getEvents().size());
+        JsonNode events = getEvents();
+        assertEquals(5, events.size());
+        assertEquals(1, eventCount(events, "PAYMENT_REQUEST_RESOLVED"));
         HttpResponse<String> original = get(id);
         assertEquals(10000, JSON.readTree(original.body()).get("amountMinor").asLong());
     }
@@ -248,6 +263,17 @@ class PaymentHttpTests {
             assertEquals(1L, count("provider_payments"));
             assertEquals(1L, count("webhook_events"));
             assertEquals(1L, count("webhook_deliveries"));
+            JsonNode events = getEvents();
+            assertEquals(2, eventCount(events, "PAYMENT_REQUEST_RESOLVED"));
+            JsonNode firstResolved = event(events, "PAYMENT_REQUEST_RESOLVED", 0);
+            JsonNode secondResolved = event(events, "PAYMENT_REQUEST_RESOLVED", 1);
+            assertEquals(key, firstResolved.get("idempotencyKey").asText());
+            assertEquals(key, secondResolved.get("idempotencyKey").asText());
+            assertEquals(firstResolved.get("requestFingerprint").asText(),
+                    secondResolved.get("requestFingerprint").asText());
+            assertEquals(firstBody.get("paymentId").asText(), firstResolved.get("paymentId").asText());
+            assertEquals(firstResolved.get("paymentId").asText(), secondResolved.get("paymentId").asText());
+            assertFalse(firstResolved.get("eventId").asLong() == secondResolved.get("eventId").asLong());
         } finally {
             start.countDown();
             executor.shutdownNow();
@@ -298,17 +324,27 @@ class PaymentHttpTests {
             assertEquals(0L, count("webhook_deliveries"));
             assertEquals(1, runEventCount("PAYMENT_COMMITTED"));
             assertEquals(1, runEventCount("RESPONSE_DELAY_INJECTED"));
+            assertEquals(2, runEventCount("PAYMENT_REQUEST_RESOLVED"));
             assertEquals(2, runEventCount("MERCHANT_REQUEST_OBSERVED"));
 
             JsonNode events = getEvents();
-            assertEquals(5, events.size());
+            assertEquals(7, events.size());
             assertEquals("RUN_STARTED", events.get(0).get("eventType").asText());
             assertEquals("MERCHANT_REQUEST_OBSERVED", events.get(1).get("eventType").asText());
-            assertEquals("PAYMENT_COMMITTED", events.get(2).get("eventType").asText());
+            assertEquals("PAYMENT_REQUEST_RESOLVED", events.get(2).get("eventType").asText());
+            assertEquals("PAYMENT_COMMITTED", events.get(3).get("eventType").asText());
+            assertEquals(paymentId, events.get(3).get("paymentId").asText());
+            assertEquals("RESPONSE_DELAY_INJECTED", events.get(4).get("eventType").asText());
+            assertEquals(responseDelayMillis, events.get(4).get("responseDelayMillis").asInt());
+            assertEquals("MERCHANT_REQUEST_OBSERVED", events.get(5).get("eventType").asText());
+            assertEquals("PAYMENT_REQUEST_RESOLVED", events.get(6).get("eventType").asText());
+            assertEquals(key, events.get(2).get("idempotencyKey").asText());
+            assertEquals(key, events.get(6).get("idempotencyKey").asText());
+            assertEquals(events.get(2).get("requestFingerprint").asText(),
+                    events.get(6).get("requestFingerprint").asText());
             assertEquals(paymentId, events.get(2).get("paymentId").asText());
-            assertEquals("RESPONSE_DELAY_INJECTED", events.get(3).get("eventType").asText());
-            assertEquals(responseDelayMillis, events.get(3).get("responseDelayMillis").asInt());
-            assertEquals("MERCHANT_REQUEST_OBSERVED", events.get(4).get("eventType").asText());
+            assertEquals(paymentId, events.get(6).get("paymentId").asText());
+            assertFalse(events.get(2).get("eventId").asLong() == events.get(6).get("eventId").asLong());
 
             int eventCountBeforeEvaluation = events.size();
             JsonNode evaluation = conformance();
@@ -320,7 +356,7 @@ class PaymentHttpTests {
             assertEquals("INV-01", assertion.get("invariantId").asText());
             assertEquals("PASS", assertion.get("verdict").asText());
             assertEvidence(assertion.get("evidenceEventIds"), events.get(1).get("eventId").asLong(),
-                    committedEventId, delayEventId, events.get(4).get("eventId").asLong());
+                    committedEventId, delayEventId, events.get(5).get("eventId").asLong());
             assertEquals(eventCountBeforeEvaluation, getEvents().size());
         } finally {
             executor.shutdownNow();
@@ -341,6 +377,7 @@ class PaymentHttpTests {
             awaitRunEventEvidence(firstRequest, "PRE_COMMIT_TIMEOUT_INJECTED");
             assertEquals(0L, count("provider_payments"));
             assertEquals(0, runEventCount("PAYMENT_COMMITTED"));
+            assertEquals(0, runEventCount("PAYMENT_REQUEST_RESOLVED"));
 
             ExecutionException timeout = assertThrows(ExecutionException.class,
                     () -> firstRequest.get(5, TimeUnit.SECONDS));
@@ -353,6 +390,7 @@ class PaymentHttpTests {
             assertEquals(1L, count("provider_payments"));
             assertEquals(1, runEventCount("PRE_COMMIT_TIMEOUT_INJECTED"));
             assertEquals(1, runEventCount("PAYMENT_COMMITTED"));
+            assertEquals(1, runEventCount("PAYMENT_REQUEST_RESOLVED"));
             assertEquals(0L, count("webhook_events"));
             assertEquals(0L, count("webhook_deliveries"));
 
@@ -366,7 +404,7 @@ class PaymentHttpTests {
                     """, String.class, UUID.fromString(runId)));
 
             JsonNode events = getEvents();
-            assertEquals(5, events.size());
+            assertEquals(6, events.size());
             assertEquals("RUN_STARTED", events.get(0).get("eventType").asText());
             assertEquals("MERCHANT_REQUEST_OBSERVED", events.get(1).get("eventType").asText());
             assertEquals("PRE_COMMIT_TIMEOUT_INJECTED", events.get(2).get("eventType").asText());
@@ -375,7 +413,11 @@ class PaymentHttpTests {
             assertEquals(responseDelayMillis, events.get(2).get("responseDelayMillis").asInt());
             assertTrue(events.get(2).get("paymentId").isNull());
             assertEquals("MERCHANT_REQUEST_OBSERVED", events.get(3).get("eventType").asText());
-            assertEquals("PAYMENT_COMMITTED", events.get(4).get("eventType").asText());
+            assertEquals("PAYMENT_REQUEST_RESOLVED", events.get(4).get("eventType").asText());
+            assertEquals(key, events.get(4).get("idempotencyKey").asText());
+            assertEquals(fingerprint, events.get(4).get("requestFingerprint").asText());
+            assertEquals(payment.get("paymentId").asText(), events.get(4).get("paymentId").asText());
+            assertEquals("PAYMENT_COMMITTED", events.get(5).get("eventType").asText());
             long previous = Long.MIN_VALUE;
             for (JsonNode event : events) {
                 assertTrue(event.get("eventId").asLong() > previous);

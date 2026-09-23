@@ -11,9 +11,16 @@ PayLab can directly establish facts inside the simulator, including:
 - whether a payment committed;
 - provider payment state;
 - idempotency key and request fingerprint;
+- the provider payment identity returned by each successfully resolved create request;
 - provider event identity;
 - webhook scheduling and delivery attempts;
 - the fault injected by the scenario.
+
+`PAYMENT_REQUEST_RESOLVED` explicitly links each successful create attempt's idempotency key and
+request fingerprint to the provider payment identity returned by `createOrResolve`. Equivalent or
+concurrent requests may therefore produce distinct resolution evidence rows that point to the same
+payment. This evidence does not by itself implement conformance evaluation for same-key retry,
+conflicting-key reuse, or concurrent duplicate creation.
 
 ### Black-box merchant evidence
 

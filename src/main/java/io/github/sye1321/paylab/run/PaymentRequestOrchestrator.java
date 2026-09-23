@@ -42,6 +42,7 @@ public class PaymentRequestOrchestrator {
             return timeoutBeforeCommit.execute(run, key, intent);
         }
         PaymentCreationResult creation = payments.createOrResolve(runId, key, intent);
+        events.appendPaymentRequestResolved(runId, key, intent.fingerprint(), creation.payment().id());
         return switch (run.scenario()) {
             case ASYNC_SUCCESS -> new PaymentRequestResult(asyncSuccess.execute(runId, creation.payment()), null);
             case DUPLICATE_WEBHOOK ->
