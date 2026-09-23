@@ -55,7 +55,7 @@ class JdbcProviderPaymentStoreTests {
 
     @BeforeEach
     void createRun() {
-        runId = runs.create(ScenarioId.ASYNC_SUCCESS).runId();
+        runId = runs.create(ScenarioId.ASYNC_SUCCESS, "http://localhost/webhooks/paylab").runId();
     }
 
     @Test

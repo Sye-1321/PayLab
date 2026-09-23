@@ -78,6 +78,7 @@ class PaymentHttpTests {
         assertEquals(runId, body.get("runId").asText());
         assertEquals("ASYNC_SUCCESS", body.get("scenario").asText());
         assertEquals(1, body.get("scenarioVersion").asInt());
+        assertEquals("http://localhost:8081/webhooks/paylab", body.get("webhookUrl").asText());
         assertFalse(body.has("seed"));
         JsonNode events = getEvents();
         assertEquals(1, events.size());
@@ -219,7 +220,7 @@ class PaymentHttpTests {
         HttpRequest request = HttpRequest.newBuilder(URI.create("http://localhost:" + port + "/test-runs"))
                 .header("Content-Type", "application/json")
                 .POST(HttpRequest.BodyPublishers.ofString("""
-                        {"scenario":"SAME_KEY_RETRY"}
+                        {"scenario":"SAME_KEY_RETRY","webhookUrl":"http://localhost:8081/webhooks/paylab"}
                         """))
                 .build();
         HttpResponse<String> response = HTTP.send(request, HttpResponse.BodyHandlers.ofString());
@@ -274,7 +275,7 @@ class PaymentHttpTests {
         HttpRequest request = HttpRequest.newBuilder(URI.create("http://localhost:" + port + "/test-runs"))
                 .header("Content-Type", "application/json")
                 .POST(HttpRequest.BodyPublishers.ofString("""
-                        {"scenario":"ASYNC_SUCCESS"}
+                        {"scenario":"ASYNC_SUCCESS","webhookUrl":"http://localhost:8081/webhooks/paylab"}
                         """))
                 .build();
         return HTTP.send(request, HttpResponse.BodyHandlers.ofString());

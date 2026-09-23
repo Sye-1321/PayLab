@@ -55,11 +55,23 @@ Because PayLab sends HTTP requests to merchant callback URLs, target configurati
 
 Development defaults should restrict destinations to explicitly allowed hosts or local/container networks. Unsafe URL schemes are rejected, and arbitrary external destinations are not enabled implicitly.
 
+The implemented callback validator accepts only absolute `http` or `https` URLs with a host and
+without user-info. The default host allow-list is `localhost`, `127.0.0.1`, and `::1`. Additional
+development/test host names must be explicitly supplied through the comma-separated
+`paylab.webhook.allowed-hosts` configuration property (environment variable
+`PAYLAB_WEBHOOK_ALLOWED_HOSTS`). The configured URL is stored on its test run; signing secrets are
+not stored with runs.
+
 ## Secret handling
 
 - secrets are supplied through environment/configuration rather than committed to source;
 - signing secrets are redacted from logs and reports;
 - evidence stores the metadata required to explain verification without persisting secret material.
+
+For the current callback contract, `PayLab-Signature` is lowercase hexadecimal HMAC-SHA256 over
+`UTF8(PayLab-Timestamp) || "." || exactRawBody`. `PayLab-Timestamp` contains Unix epoch seconds and
+`PayLab-Event-Id` contains the stable provider event UUID. The signing key comes only from
+`paylab.webhook.signing-secret` / `PAYLAB_WEBHOOK_SIGNING_SECRET` and has no application default.
 
 ## Evidence integrity
 

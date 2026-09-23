@@ -16,7 +16,7 @@ public class TestRunHttpErrors {
     }
 
     @ExceptionHandler({MethodArgumentNotValidException.class, HttpMessageNotReadableException.class,
-            MethodArgumentTypeMismatchException.class})
+            MethodArgumentTypeMismatchException.class, IllegalArgumentException.class})
     ResponseEntity<ApiError> badRequest() {
         return ResponseEntity.badRequest().body(new ApiError("INVALID_RUN_REQUEST", "Invalid test run request"));
     }

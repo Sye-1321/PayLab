@@ -21,20 +21,20 @@ public class JdbcTestRunStore {
     }
 
     @Transactional
-    public TestRun create(ScenarioId scenario) {
+    public TestRun create(ScenarioId scenario, String webhookUrl) {
         TestRunId id = new TestRunId(UUID.randomUUID());
         TestRun run = jdbc.queryForObject("""
-                INSERT INTO test_runs (run_id, scenario_id, scenario_version)
-                VALUES (?, ?, 1)
-                RETURNING run_id, scenario_id, scenario_version, created_at
-                """, JdbcTestRunStore::readRun, id.value(), scenario.name());
+                INSERT INTO test_runs (run_id, scenario_id, scenario_version, webhook_url)
+                VALUES (?, ?, 1, ?)
+                RETURNING run_id, scenario_id, scenario_version, created_at, webhook_url
+                """, JdbcTestRunStore::readRun, id.value(), scenario.name(), webhookUrl);
         events.appendRunStarted(id);
         return run;
     }
 
     public Optional<TestRun> findById(TestRunId id) {
         return jdbc.query("""
-                SELECT run_id, scenario_id, scenario_version, created_at
+                SELECT run_id, scenario_id, scenario_version, created_at, webhook_url
                 FROM test_runs WHERE run_id = ?
                 """, JdbcTestRunStore::readRun, id.value()).stream().findFirst();
     }
@@ -47,6 +47,6 @@ public class JdbcTestRunStore {
         return new TestRun(new TestRunId(rs.getObject("run_id", UUID.class)),
                 ScenarioId.valueOf(rs.getString("scenario_id")),
                 rs.getInt("scenario_version"),
-                rs.getTimestamp("created_at").toInstant());
+                rs.getTimestamp("created_at").toInstant(), rs.getString("webhook_url"));
     }
 }

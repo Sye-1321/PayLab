@@ -103,6 +103,38 @@ PayLab is intended for development and test environments. It does not provide re
 
 Webhook authenticity, replay/duplication behavior, callback targets, secret handling, and test evidence are covered in [`docs/security.md`](docs/security.md).
 
+## Webhook contract
+
+`ASYNC_SUCCESS` test runs require one callback URL, for example:
+
+```json
+{"scenario":"ASYNC_SUCCESS","webhookUrl":"http://localhost:8081/webhooks/paylab"}
+```
+
+The internal successful-payment webhook capability delivers the exact persisted JSON bytes using
+`Content-Type: application/json`:
+
+```json
+{
+  "eventId": "7bb847b5-44f2-4d4d-bf35-d4be8e4b172c",
+  "type": "PAYMENT_SUCCEEDED",
+  "createdAt": "2026-09-23T00:00:00Z",
+  "data": {
+    "paymentId": "payment-id",
+    "amountMinor": 10000,
+    "currency": "ETB",
+    "merchantReference": "order-123",
+    "status": "SUCCEEDED"
+  }
+}
+```
+
+Each attempt includes `PayLab-Event-Id`, `PayLab-Timestamp` (Unix epoch seconds), and
+`PayLab-Signature`. The signature is the lowercase hexadecimal HMAC-SHA256 of the UTF-8 timestamp,
+a literal `.`, and the exact raw request body. The instance secret must be supplied as
+`paylab.webhook.signing-secret` (for example, environment variable
+`PAYLAB_WEBHOOK_SIGNING_SECRET`); there is no default secret.
+
 ## Documentation
 
 - [`docs/invariants.md`](docs/invariants.md) — payment-safety rules PayLab evaluates
