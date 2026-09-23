@@ -48,10 +48,10 @@ public class TestRunController {
                 webhookUrl = webhookUrls.validate(request.webhookUrl());
                 responseDelayMillis = null;
             }
-            case TIMEOUT_AFTER_COMMIT -> {
+            case TIMEOUT_BEFORE_COMMIT, TIMEOUT_AFTER_COMMIT -> {
                 if (request.webhookUrl() != null || request.responseDelayMillis() == null
                         || request.responseDelayMillis() <= 0 || request.responseDelayMillis() > 30_000) {
-                    throw new IllegalArgumentException("Invalid TIMEOUT_AFTER_COMMIT configuration");
+                    throw new IllegalArgumentException("Invalid timeout scenario configuration");
                 }
                 webhookUrl = null;
                 responseDelayMillis = request.responseDelayMillis();

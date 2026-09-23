@@ -41,11 +41,27 @@ The create-payment response reflects the resulting authoritative `SUCCEEDED` pro
 
 **Purpose:** distinguish a transport failure that occurs before provider execution from an ambiguous post-commit failure.
 
-**Provider behavior:** terminate the request before a payment is committed.
+**Provider behavior:**
+
+1. record `MERCHANT_REQUEST_OBSERVED`;
+2. atomically claim the run's one-shot fault by recording `PRE_COMMIT_TIMEOUT_INJECTED` with the
+   request key, fingerprint, and configured delay;
+3. create no provider payment for the faulted request;
+4. delay the HTTP response by `responseDelayMillis`;
+5. return `503 PRE_COMMIT_FAILURE` if the client remains connected through the delay.
+
+The intended observation is a client timeout when its HTTP timeout is shorter than PayLab's bounded
+application delay. This is not a TCP reset, packet loss, or socket termination.
 
 **Provider truth:** no logical payment exists for the failed attempt.
 
 **Expected merchant behavior:** a retry of the same financial intent can safely create one payment.
+The pre-commit fault is consumed once per run. A later request creates or resolves through normal
+run-scoped idempotency, progresses `CREATED -> PROCESSING -> SUCCEEDED`, and records
+`PAYMENT_COMMITTED` only for a newly created payment. No webhook is scheduled.
+
+This is distinct from `TIMEOUT_AFTER_COMMIT`, where a `SUCCEEDED` provider payment exists before the
+response delay. `TIMEOUT_BEFORE_COMMIT` is executable but does not yet have a conformance evaluator.
 
 **Relevant invariants:** INV-02.
 

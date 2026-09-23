@@ -298,6 +298,77 @@ class PaymentHttpTests {
     }
 
     @Test
+    void timeoutBeforeCommitTimesOutWithoutPaymentAndSameKeyRetryCreatesOneSucceededPayment() throws Exception {
+        int responseDelayMillis = 5_000;
+        runId = createTimeoutBeforeCommitRun(responseDelayMillis);
+        String key = UUID.randomUUID().toString();
+        var executor = Executors.newSingleThreadExecutor();
+        try {
+            Future<HttpResponse<String>> firstRequest = executor.submit(
+                    () -> post(key, VALID_BODY, Duration.ofMillis(2_000)));
+
+            awaitRunEventEvidence(firstRequest, "PRE_COMMIT_TIMEOUT_INJECTED");
+            assertEquals(0L, count("provider_payments"));
+            assertEquals(0, runEventCount("PAYMENT_COMMITTED"));
+
+            ExecutionException timeout = assertThrows(ExecutionException.class,
+                    () -> firstRequest.get(5, TimeUnit.SECONDS));
+            assertInstanceOf(HttpTimeoutException.class, timeout.getCause());
+
+            HttpResponse<String> retry = post(key, VALID_BODY);
+            assertEquals(200, retry.statusCode());
+            JsonNode payment = JSON.readTree(retry.body());
+            assertEquals("SUCCEEDED", payment.get("status").asText());
+            assertEquals(1L, count("provider_payments"));
+            assertEquals(1, runEventCount("PRE_COMMIT_TIMEOUT_INJECTED"));
+            assertEquals(1, runEventCount("PAYMENT_COMMITTED"));
+            assertEquals(0L, count("webhook_events"));
+            assertEquals(0L, count("webhook_deliveries"));
+
+            String fingerprint = new PaymentIntent(new Money(10000, "ETB"),
+                    new MerchantReference("order-123")).fingerprint();
+            assertEquals(key, jdbc.queryForObject("""
+                    SELECT idempotency_key FROM provider_payments WHERE run_id = ?
+                    """, String.class, UUID.fromString(runId)));
+            assertEquals(fingerprint, jdbc.queryForObject("""
+                    SELECT request_fingerprint FROM provider_payments WHERE run_id = ?
+                    """, String.class, UUID.fromString(runId)));
+
+            JsonNode events = getEvents();
+            assertEquals(5, events.size());
+            assertEquals("RUN_STARTED", events.get(0).get("eventType").asText());
+            assertEquals("MERCHANT_REQUEST_OBSERVED", events.get(1).get("eventType").asText());
+            assertEquals("PRE_COMMIT_TIMEOUT_INJECTED", events.get(2).get("eventType").asText());
+            assertEquals(key, events.get(2).get("idempotencyKey").asText());
+            assertEquals(fingerprint, events.get(2).get("requestFingerprint").asText());
+            assertEquals(responseDelayMillis, events.get(2).get("responseDelayMillis").asInt());
+            assertTrue(events.get(2).get("paymentId").isNull());
+            assertEquals("MERCHANT_REQUEST_OBSERVED", events.get(3).get("eventType").asText());
+            assertEquals("PAYMENT_COMMITTED", events.get(4).get("eventType").asText());
+            long previous = Long.MIN_VALUE;
+            for (JsonNode event : events) {
+                assertTrue(event.get("eventId").asLong() > previous);
+                previous = event.get("eventId").asLong();
+            }
+        } finally {
+            executor.shutdownNow();
+            assertTrue(executor.awaitTermination(10, TimeUnit.SECONDS));
+        }
+    }
+
+    @Test
+    void timeoutBeforeCommitReturnsExplicitFailureWhenClientWaitsForDelay() throws Exception {
+        runId = createTimeoutBeforeCommitRun(20);
+
+        HttpResponse<String> response = post(UUID.randomUUID().toString(), VALID_BODY);
+
+        assertEquals(503, response.statusCode());
+        assertEquals("PRE_COMMIT_FAILURE", JSON.readTree(response.body()).get("code").asText());
+        assertEquals(0L, count("provider_payments"));
+        assertEquals(1, runEventCount("PRE_COMMIT_TIMEOUT_INJECTED"));
+    }
+
+    @Test
     void timeoutAfterCommitDifferentKeyPreservesDuplicateRiskEvidence() throws Exception {
         runId = createTimeoutRun(2_000);
         var executor = Executors.newSingleThreadExecutor();
@@ -386,6 +457,13 @@ class PaymentHttpTests {
                 """).statusCode());
         assertEquals(400, postRun("""
                 {"scenario":"TIMEOUT_AFTER_COMMIT","webhookUrl":"http://localhost/webhook",
+                 "responseDelayMillis":10}
+                """).statusCode());
+        assertEquals(400, postRun("""
+                {"scenario":"TIMEOUT_BEFORE_COMMIT"}
+                """).statusCode());
+        assertEquals(400, postRun("""
+                {"scenario":"TIMEOUT_BEFORE_COMMIT","webhookUrl":"http://localhost/webhook",
                  "responseDelayMillis":10}
                 """).statusCode());
     }
@@ -528,6 +606,18 @@ class PaymentHttpTests {
         return body.get("runId").asText();
     }
 
+    private String createTimeoutBeforeCommitRun(int delayMillis) throws Exception {
+        HttpResponse<String> response = postRun("""
+                {"scenario":"TIMEOUT_BEFORE_COMMIT","responseDelayMillis":%d}
+                """.formatted(delayMillis));
+        assertEquals(201, response.statusCode());
+        JsonNode body = JSON.readTree(response.body());
+        assertEquals("TIMEOUT_BEFORE_COMMIT", body.get("scenario").asText());
+        assertEquals(delayMillis, body.get("responseDelayMillis").asInt());
+        assertTrue(body.get("webhookUrl").isNull());
+        return body.get("runId").asText();
+    }
+
     private JsonNode getEvents() throws Exception {
         HttpRequest request = HttpRequest.newBuilder(
                 URI.create("http://localhost:" + port + "/test-runs/" + runId + "/events")).GET().build();
@@ -569,17 +659,21 @@ class PaymentHttpTests {
     }
 
     private void awaitResponseDelayEvidence(Future<?> firstRequest) throws Exception {
+        awaitRunEventEvidence(firstRequest, "RESPONSE_DELAY_INJECTED");
+    }
+
+    private void awaitRunEventEvidence(Future<?> firstRequest, String eventType) throws Exception {
         long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
         while (System.nanoTime() < deadline) {
-            if (runEventCount("RESPONSE_DELAY_INJECTED") == 1) {
+            if (runEventCount(eventType) == 1) {
                 return;
             }
             if (firstRequest.isDone()) {
-                throw new AssertionError("First request completed before response-delay evidence became visible");
+                throw new AssertionError("First request completed before " + eventType + " evidence became visible");
             }
             Thread.sleep(20);
         }
-        throw new AssertionError("Response-delay evidence did not become visible within 5 seconds");
+        throw new AssertionError(eventType + " evidence did not become visible within 5 seconds");
     }
 
     private int runEventCount(String eventType) {

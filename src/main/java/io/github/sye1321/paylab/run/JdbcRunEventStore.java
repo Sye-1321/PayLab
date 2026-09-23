@@ -31,6 +31,19 @@ public class JdbcRunEventStore {
                 """, runId.value(), RunEventType.MERCHANT_REQUEST_OBSERVED.name(), key.value(), fingerprint);
     }
 
+    public boolean tryAppendPreCommitTimeoutInjected(TestRunId runId, IdempotencyKey key,
+            String fingerprint, int responseDelayMillis) {
+        return !jdbc.query("""
+                INSERT INTO run_events
+                    (run_id, event_type, idempotency_key, request_fingerprint, response_delay_millis)
+                VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT (run_id) WHERE event_type = 'PRE_COMMIT_TIMEOUT_INJECTED' DO NOTHING
+                RETURNING event_id
+                """, (rs, rowNum) -> rs.getLong("event_id"), runId.value(),
+                RunEventType.PRE_COMMIT_TIMEOUT_INJECTED.name(), key.value(), fingerprint,
+                responseDelayMillis).isEmpty();
+    }
+
     public void appendPaymentCommitted(TestRunId runId, PaymentId paymentId) {
         jdbc.update("INSERT INTO run_events (run_id, event_type, payment_id) VALUES (?, ?, ?)",
                 runId.value(), RunEventType.PAYMENT_COMMITTED.name(), paymentId.value());

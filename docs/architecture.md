@@ -52,6 +52,12 @@ Controls scenario-specific behavior and fault injection, including response dela
 
 A scenario changes provider behavior for a test run; it does not directly mutate merchant state.
 
+`TIMEOUT_BEFORE_COMMIT` uses a partial unique PostgreSQL index and an atomic run-event insert as its
+one-shot fault claim. The winning request commits `PRE_COMMIT_TIMEOUT_INJECTED` before provider
+creation is considered; it then exits scenario execution without creating a payment. The HTTP error
+boundary applies the configured delay after that database statement has completed. A concurrent
+loser or later retry sees the consumed claim and follows normal provider creation.
+
 ### Webhook
 
 Owns:

@@ -17,6 +17,10 @@ public class ResponseDelayApplier {
             return;
         }
         events.appendResponseDelayInjected(runId, paymentId, responseDelayMillis);
+        delay(responseDelayMillis);
+    }
+
+    public void delay(int responseDelayMillis) {
         try {
             Thread.sleep(responseDelayMillis);
         } catch (InterruptedException interrupted) {

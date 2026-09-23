@@ -139,6 +139,13 @@ Creating a payment for an `ASYNC_SUCCESS` run advances provider truth from `CREA
 `PROCESSING` to `SUCCEEDED`, then durably schedules the signed callback. The payment response
 therefore reports `SUCCEEDED`; callback HTTP delivery remains the webhook worker's responsibility.
 
+`TIMEOUT_BEFORE_COMMIT` runs require `responseDelayMillis` from 1 through 30,000 and no webhook URL.
+The first create request is recorded, atomically claims the run's one-shot pre-commit fault, and
+records `PRE_COMMIT_TIMEOUT_INJECTED` without creating a provider payment. PayLab then delays the HTTP
+response. A client whose timeout is shorter observes a timeout; a sufficiently patient client receives
+`503 PRE_COMMIT_FAILURE`. Later requests proceed through normal payment creation to `SUCCEEDED`, with
+no webhook scheduled. This scenario does not yet have a conformance evaluator.
+
 `TIMEOUT_AFTER_COMMIT` runs require `responseDelayMillis` from 1 through 30,000 and do not accept a
 webhook URL. A newly created payment reaches durable `SUCCEEDED` state before PayLab applies the
 configured application response delay. To observe a timeout, the merchant client's HTTP timeout must

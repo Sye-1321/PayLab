@@ -2,6 +2,8 @@ package io.github.sye1321.paylab.provider.http;
 
 import io.github.sye1321.paylab.provider.IdempotencyConflictException;
 import io.github.sye1321.paylab.provider.PaymentNotFoundException;
+import io.github.sye1321.paylab.run.PreCommitFailureException;
+import io.github.sye1321.paylab.run.ResponseDelayApplier;
 import io.github.sye1321.paylab.run.TestRunNotFoundException;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
@@ -15,6 +17,19 @@ import org.springframework.web.method.annotation.MethodArgumentTypeMismatchExcep
 
 @RestControllerAdvice(basePackageClasses = PaymentController.class)
 public class PaymentHttpErrors {
+
+    private final ResponseDelayApplier responseDelays;
+
+    public PaymentHttpErrors(ResponseDelayApplier responseDelays) {
+        this.responseDelays = responseDelays;
+    }
+
+    @ExceptionHandler(PreCommitFailureException.class)
+    ResponseEntity<ApiError> preCommitFailure(PreCommitFailureException failure) {
+        responseDelays.delay(failure.responseDelayMillis());
+        return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE)
+                .body(new ApiError("PRE_COMMIT_FAILURE", "Payment creation failed before provider commit"));
+    }
 
     @ExceptionHandler(IdempotencyConflictException.class)
     ResponseEntity<ApiError> conflict() {
