@@ -145,6 +145,15 @@ configured application response delay. To observe a timeout, the merchant client
 be shorter than that delay. A same-key equivalent retry resolves normally without applying the delay
 again.
 
+The current evidence snapshot for this scenario can be evaluated with
+`GET /test-runs/{runId}/conformance`. The response contains the overall verdict and the
+`AMBIGUOUS_OUTCOME_RECOVERY` assertion for `INV-01`, including the persisted run-event IDs that
+support it. An equivalent same-key replay or a successful lookup of the original payment establishes
+`PASS`; an equivalent request under a different key establishes `FAIL`; and incomplete fault or
+recovery evidence is `INCONCLUSIVE`. Evaluation is read-only and is not final: later evidence can
+change a subsequent result because run finalization and persisted certification results are not yet
+implemented. No other scenario currently has a conformance evaluator.
+
 ## Documentation
 
 - [`docs/invariants.md`](docs/invariants.md) — payment-safety rules PayLab evaluates

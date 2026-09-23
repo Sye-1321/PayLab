@@ -278,6 +278,19 @@ class PaymentHttpTests {
             assertEquals("RESPONSE_DELAY_INJECTED", events.get(3).get("eventType").asText());
             assertEquals(responseDelayMillis, events.get(3).get("responseDelayMillis").asInt());
             assertEquals("MERCHANT_REQUEST_OBSERVED", events.get(4).get("eventType").asText());
+
+            int eventCountBeforeEvaluation = events.size();
+            JsonNode evaluation = conformance();
+            assertEquals("TIMEOUT_AFTER_COMMIT", evaluation.get("scenario").asText());
+            assertEquals(1, evaluation.get("scenarioVersion").asInt());
+            assertEquals("PASS", evaluation.get("verdict").asText());
+            JsonNode assertion = evaluation.get("assertions").get(0);
+            assertEquals("AMBIGUOUS_OUTCOME_RECOVERY", assertion.get("assertionId").asText());
+            assertEquals("INV-01", assertion.get("invariantId").asText());
+            assertEquals("PASS", assertion.get("verdict").asText());
+            assertEvidence(assertion.get("evidenceEventIds"), events.get(1).get("eventId").asLong(),
+                    committedEventId, delayEventId, events.get(4).get("eventId").asLong());
+            assertEquals(eventCountBeforeEvaluation, getEvents().size());
         } finally {
             executor.shutdownNow();
             assertTrue(executor.awaitTermination(10, TimeUnit.SECONDS));
@@ -286,24 +299,74 @@ class PaymentHttpTests {
 
     @Test
     void timeoutAfterCommitDifferentKeyPreservesDuplicateRiskEvidence() throws Exception {
-        runId = createTimeoutRun(20);
+        runId = createTimeoutRun(2_000);
+        var executor = Executors.newSingleThreadExecutor();
+        try {
+            Future<HttpResponse<String>> firstRequest = executor.submit(
+                    () -> post("first-key", VALID_BODY, Duration.ofMillis(500)));
+            awaitResponseDelayEvidence(firstRequest);
+            ExecutionException timeout = assertThrows(ExecutionException.class,
+                    () -> firstRequest.get(5, TimeUnit.SECONDS));
+            assertInstanceOf(HttpTimeoutException.class, timeout.getCause());
 
-        HttpResponse<String> first = post("first-key", VALID_BODY);
-        HttpResponse<String> second = post("second-key", VALID_BODY);
+            HttpResponse<String> second = post("second-key", VALID_BODY);
+            assertEquals(200, second.statusCode());
+            assertEquals(2L, count("provider_payments"));
+            JsonNode events = getEvents();
+            assertEquals(2, eventCount(events, "PAYMENT_COMMITTED"));
+            JsonNode firstObserved = event(events, "MERCHANT_REQUEST_OBSERVED", 0);
+            JsonNode secondObserved = event(events, "MERCHANT_REQUEST_OBSERVED", 1);
+            assertEquals("first-key", firstObserved.get("idempotencyKey").asText());
+            assertEquals("second-key", secondObserved.get("idempotencyKey").asText());
+            assertEquals(firstObserved.get("requestFingerprint").asText(),
+                    secondObserved.get("requestFingerprint").asText());
 
-        assertEquals(200, first.statusCode());
-        assertEquals(200, second.statusCode());
-        assertFalse(JSON.readTree(first.body()).get("paymentId").asText()
-                .equals(JSON.readTree(second.body()).get("paymentId").asText()));
-        assertEquals(2L, count("provider_payments"));
-        JsonNode events = getEvents();
-        assertEquals(2, eventCount(events, "PAYMENT_COMMITTED"));
-        JsonNode firstObserved = event(events, "MERCHANT_REQUEST_OBSERVED", 0);
-        JsonNode secondObserved = event(events, "MERCHANT_REQUEST_OBSERVED", 1);
-        assertEquals("first-key", firstObserved.get("idempotencyKey").asText());
-        assertEquals("second-key", secondObserved.get("idempotencyKey").asText());
-        assertEquals(firstObserved.get("requestFingerprint").asText(),
-                secondObserved.get("requestFingerprint").asText());
+            JsonNode evaluation = conformance();
+            assertEquals("FAIL", evaluation.get("verdict").asText());
+            JsonNode assertion = evaluation.get("assertions").get(0);
+            assertEquals("AMBIGUOUS_OUTCOME_RECOVERY", assertion.get("assertionId").asText());
+            assertEquals("INV-01", assertion.get("invariantId").asText());
+            assertEquals("FAIL", assertion.get("verdict").asText());
+            assertTrue(containsEvidence(assertion.get("evidenceEventIds"), secondObserved.get("eventId").asLong()));
+        } finally {
+            executor.shutdownNow();
+            assertTrue(executor.awaitTermination(10, TimeUnit.SECONDS));
+        }
+    }
+
+    @Test
+    void timeoutAfterCommitCanBecomePassThroughStatusLookup() throws Exception {
+        runId = createTimeoutRun(2_000);
+        var executor = Executors.newSingleThreadExecutor();
+        try {
+            Future<HttpResponse<String>> firstRequest = executor.submit(
+                    () -> post("status-key", VALID_BODY, Duration.ofMillis(500)));
+            awaitResponseDelayEvidence(firstRequest);
+            ExecutionException timeout = assertThrows(ExecutionException.class,
+                    () -> firstRequest.get(5, TimeUnit.SECONDS));
+            assertInstanceOf(HttpTimeoutException.class, timeout.getCause());
+
+            String paymentId = jdbc.queryForObject(
+                    "SELECT payment_id FROM provider_payments WHERE run_id = ?", String.class,
+                    UUID.fromString(runId));
+            JsonNode beforeLookup = conformance();
+            assertEquals("INCONCLUSIVE", beforeLookup.get("verdict").asText());
+
+            HttpResponse<String> lookup = get(paymentId);
+            assertEquals(200, lookup.statusCode());
+            JsonNode events = getEvents();
+            JsonNode statusQuery = event(events, "MERCHANT_STATUS_QUERY_OBSERVED", 0);
+            assertEquals(paymentId, statusQuery.get("paymentId").asText());
+
+            JsonNode afterLookup = conformance();
+            assertEquals("PASS", afterLookup.get("verdict").asText());
+            JsonNode assertion = afterLookup.get("assertions").get(0);
+            assertEquals("PASS", assertion.get("verdict").asText());
+            assertTrue(containsEvidence(assertion.get("evidenceEventIds"), statusQuery.get("eventId").asLong()));
+        } finally {
+            executor.shutdownNow();
+            assertTrue(executor.awaitTermination(10, TimeUnit.SECONDS));
+        }
     }
 
     @Test
@@ -329,10 +392,12 @@ class PaymentHttpTests {
 
     @Test
     void missingPaymentReturns404() throws Exception {
+        int before = runEventCount("MERCHANT_STATUS_QUERY_OBSERVED");
         HttpResponse<String> response = get(UUID.randomUUID().toString());
 
         assertEquals(404, response.statusCode());
         assertEquals("PAYMENT_NOT_FOUND", JSON.readTree(response.body()).get("code").asText());
+        assertEquals(before, runEventCount("MERCHANT_STATUS_QUERY_OBSERVED"));
     }
 
     @Test
@@ -471,6 +536,14 @@ class PaymentHttpTests {
         return JSON.readTree(response.body());
     }
 
+    private JsonNode conformance() throws Exception {
+        HttpRequest request = HttpRequest.newBuilder(
+                URI.create("http://localhost:" + port + "/test-runs/" + runId + "/conformance")).GET().build();
+        HttpResponse<String> response = HTTP.send(request, HttpResponse.BodyHandlers.ofString());
+        assertEquals(200, response.statusCode());
+        return JSON.readTree(response.body());
+    }
+
     private long count(String table) {
         String sql = switch (table) {
             case "provider_payments", "webhook_events" ->
@@ -529,5 +602,25 @@ class PaymentHttpTests {
             }
         }
         throw new AssertionError("Missing event " + type + " occurrence " + occurrence);
+    }
+
+    private static void assertEvidence(JsonNode evidenceIds, long... expectedIds) {
+        assertEquals(expectedIds.length, evidenceIds.size());
+        long previous = Long.MIN_VALUE;
+        for (int i = 0; i < expectedIds.length; i++) {
+            long actual = evidenceIds.get(i).asLong();
+            assertEquals(expectedIds[i], actual);
+            assertTrue(actual > previous);
+            previous = actual;
+        }
+    }
+
+    private static boolean containsEvidence(JsonNode evidenceIds, long expectedId) {
+        for (JsonNode evidenceId : evidenceIds) {
+            if (evidenceId.asLong() == expectedId) {
+                return true;
+            }
+        }
+        return false;
     }
 }

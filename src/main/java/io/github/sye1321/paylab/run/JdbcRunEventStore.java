@@ -44,6 +44,11 @@ public class JdbcRunEventStore {
                 responseDelayMillis);
     }
 
+    public void appendMerchantStatusQueryObserved(TestRunId runId, PaymentId paymentId) {
+        jdbc.update("INSERT INTO run_events (run_id, event_type, payment_id) VALUES (?, ?, ?)",
+                runId.value(), RunEventType.MERCHANT_STATUS_QUERY_OBSERVED.name(), paymentId.value());
+    }
+
     public void appendWebhookScheduled(TestRunId runId, UUID webhookEventId) {
         appendWebhookEvent(runId, RunEventType.WEBHOOK_SCHEDULED, webhookEventId, null, null);
     }

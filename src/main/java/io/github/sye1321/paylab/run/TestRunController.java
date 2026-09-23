@@ -4,6 +4,8 @@ import java.time.Instant;
 import java.util.List;
 import java.util.UUID;
 
+import io.github.sye1321.paylab.conformance.ConformanceEvaluation;
+import io.github.sye1321.paylab.conformance.TimeoutAfterCommitConformanceEvaluator;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.NotNull;
 import org.springframework.http.HttpStatus;
@@ -22,11 +24,14 @@ public class TestRunController {
     private final JdbcTestRunStore store;
     private final JdbcRunEventStore events;
     private final WebhookUrlValidator webhookUrls;
+    private final TimeoutAfterCommitConformanceEvaluator conformance;
 
-    public TestRunController(JdbcTestRunStore store, JdbcRunEventStore events, WebhookUrlValidator webhookUrls) {
+    public TestRunController(JdbcTestRunStore store, JdbcRunEventStore events, WebhookUrlValidator webhookUrls,
+            TimeoutAfterCommitConformanceEvaluator conformance) {
         this.store = store;
         this.events = events;
         this.webhookUrls = webhookUrls;
+        this.conformance = conformance;
     }
 
     @PostMapping
@@ -66,6 +71,11 @@ public class TestRunController {
         TestRunId id = new TestRunId(runId);
         store.require(id);
         return events.findByRun(id).stream().map(RunEventResponse::from).toList();
+    }
+
+    @GetMapping("/{runId}/conformance")
+    public ConformanceEvaluation conformance(@PathVariable UUID runId) {
+        return conformance.evaluate(new TestRunId(runId));
     }
 
     public record CreateTestRunRequest(@NotNull ScenarioId scenario, String webhookUrl, Integer responseDelayMillis) {

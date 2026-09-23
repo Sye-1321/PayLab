@@ -41,6 +41,8 @@ public class PaymentRequestOrchestrator {
 
     public Optional<Payment> findById(TestRunId runId, PaymentId id) {
         runs.require(runId);
-        return payments.findById(runId, id);
+        Optional<Payment> payment = payments.findById(runId, id);
+        payment.ifPresent(found -> events.appendMerchantStatusQueryObserved(runId, found.id()));
+        return payment;
     }
 }

@@ -90,6 +90,12 @@ Owns:
 - invariant references;
 - verdict evaluation.
 
+The first concrete evaluator covers only `TIMEOUT_AFTER_COMMIT` assertion
+`AMBIGUOUS_OUTCOME_RECOVERY` (`INV-01`). It reads the persisted event sequence and authoritative
+provider payment without writing evaluation events or results. Consequently, evaluation is
+deterministic for a fixed database snapshot, while a later request or successful status lookup may
+change a subsequent evaluation.
+
 ### Reporting
 
 Renders evaluated results for humans and CI. Report formatting does not decide conformance.

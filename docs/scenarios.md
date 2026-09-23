@@ -73,7 +73,15 @@ An equivalent same-key replay resolves the existing payment without injecting th
 
 **Failure condition:** the merchant initiates an equivalent payment under a new idempotency key before resolving the first operation.
 
-**Required evidence:** original request and key, provider commit event, injected timeout behavior, subsequent equivalent requests, their keys, and request fingerprints.
+**Required evidence:** original request and key where available, provider commit event, injected
+response-delay event, authoritative succeeded provider payment, and subsequent equivalent requests
+or a successful lookup of the original payment. Successful payment lookups are recorded as
+`MERCHANT_STATUS_QUERY_OBSERVED` only after the run-scoped payment is found.
+
+The current `AMBIGUOUS_OUTCOME_RECOVERY` evaluation returns `PASS` for equivalent same-key replay or
+successful original-payment status lookup, `FAIL` for an equivalent new-key request, and
+`INCONCLUSIVE` when required fault or recovery evidence is absent. Failure evidence takes precedence
+over safe-recovery evidence.
 
 **Relevant invariant:** INV-01.
 

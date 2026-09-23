@@ -1,5 +1,6 @@
 package io.github.sye1321.paylab.run;
 
+import io.github.sye1321.paylab.conformance.UnsupportedConformanceScenarioException;
 import org.springframework.http.ResponseEntity;
 import org.springframework.http.converter.HttpMessageNotReadableException;
 import org.springframework.web.bind.MethodArgumentNotValidException;
@@ -13,6 +14,12 @@ public class TestRunHttpErrors {
     @ExceptionHandler(TestRunNotFoundException.class)
     ResponseEntity<ApiError> notFound() {
         return ResponseEntity.status(404).body(new ApiError("TEST_RUN_NOT_FOUND", "Test run not found"));
+    }
+
+    @ExceptionHandler(UnsupportedConformanceScenarioException.class)
+    ResponseEntity<ApiError> unsupportedConformanceScenario() {
+        return ResponseEntity.badRequest().body(new ApiError(
+                "UNSUPPORTED_CONFORMANCE_SCENARIO", "Conformance evaluation is not supported for this scenario"));
     }
 
     @ExceptionHandler({MethodArgumentNotValidException.class, HttpMessageNotReadableException.class,

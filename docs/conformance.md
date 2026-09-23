@@ -104,6 +104,28 @@ A scenario's required assertions aggregate as follows:
 
 Informational assertions do not affect the scenario verdict.
 
+## Current evaluation endpoint
+
+`GET /test-runs/{runId}/conformance` currently supports only `TIMEOUT_AFTER_COMMIT`. It evaluates
+the `AMBIGUOUS_OUTCOME_RECOVERY` assertion for `INV-01` and returns the run ID, scenario and version,
+overall verdict, and an `assertions` array containing the assertion ID, invariant ID, verdict,
+explanation, and ordered persisted evidence event IDs.
+
+The evaluator anchors the ambiguous operation at the first payment-referencing
+`RESPONSE_DELAY_INJECTED` event, finds an earlier `PAYMENT_COMMITTED` for the same payment, and
+checks the authoritative payment is `SUCCEEDED`. After that anchor:
+
+- any equivalent request under a different idempotency key produces `FAIL`, even if safe recovery
+  evidence is also present;
+- otherwise an equivalent same-key replay or successful status lookup of the original payment
+  produces `PASS`;
+- otherwise the result is `INCONCLUSIVE`, including when the post-commit ambiguity evidence itself
+  is incomplete.
+
+The endpoint evaluates the current evidence snapshot. It does not append events, persist a result,
+complete a run, or otherwise mutate payment or run state. Later merchant evidence can therefore
+change a subsequent evaluation until run finalization is implemented.
+
 ## Reports
 
 The core report formats are intended to support both humans and CI:
