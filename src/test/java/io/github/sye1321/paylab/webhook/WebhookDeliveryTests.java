@@ -8,6 +8,7 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicReference;
 
 import com.sun.net.httpserver.HttpServer;
@@ -97,6 +98,7 @@ class WebhookDeliveryTests {
         assertEquals("SUCCEEDED", payload.get("data").get("status").asText());
         assertEquals("PENDING", deliveryStatus(event.eventId()));
         assertEquals(0, attemptCount(event.eventId()));
+        assertEquals(1, targetDeliveryCount(event.eventId()));
         assertEquals(RunEventType.WEBHOOK_SCHEDULED,
                 runEvents.findByRun(runId).getLast().eventType());
     }
@@ -133,6 +135,7 @@ class WebhookDeliveryTests {
                     received.signature.get());
             assertEquals("DELIVERED", deliveryStatus(event.eventId()));
             assertEquals(1, attemptCount(event.eventId()));
+            assertEquals(1, targetDeliveryCount(event.eventId()));
             assertEquals("DELIVERED", attemptOutcome(event.eventId()));
             var events = runEvents.findByRun(event.runId());
             assertTrue(events.stream().anyMatch(value -> value.eventType() == RunEventType.WEBHOOK_RESPONSE_OBSERVED
@@ -144,16 +147,62 @@ class WebhookDeliveryTests {
     @Test
     void nonTwoHundredIsRecordedWithoutLosingEvent() throws Exception {
         try (Receiver receiver = new Receiver(503, new Received())) {
-            WebhookEvent event = scheduleSucceeded(receiver.url());
+            WebhookEvent event = scheduleSucceeded(receiver.url(), 2);
 
             worker.deliverOneDue();
 
             assertTrue(webhooks.findEvent(event.eventId()).isPresent());
             assertEquals("FAILED", deliveryStatus(event.eventId()));
+            assertEquals(1, attemptCount(event.eventId()));
+            assertEquals(2, targetDeliveryCount(event.eventId()));
             assertEquals(503, lastHttpStatus(event.eventId()));
             assertEquals("NON_2XX", attemptOutcome(event.eventId()));
             assertFalse(runEvents.findByRun(event.runId()).stream()
                     .anyMatch(value -> value.eventType() == RunEventType.WEBHOOK_DELIVERED));
+        }
+    }
+
+    @Test
+    void duplicateTargetRequeuesFirstAcknowledgementAndDeliversSameStoredEventTwice() throws Exception {
+        try (DuplicateReceiver receiver = new DuplicateReceiver()) {
+            WebhookEvent event = scheduleSucceeded(receiver.url(), 2);
+
+            worker.deliverOneDue();
+
+            assertEquals(1, receiver.requests.size());
+            assertEquals("PENDING", deliveryStatus(event.eventId()));
+            assertEquals(1, attemptCount(event.eventId()));
+            assertEquals(2, targetDeliveryCount(event.eventId()));
+            assertTrue(claimTokenIsNull(event.eventId()));
+            assertTrue(claimUntilIsNull(event.eventId()));
+
+            worker.deliverOneDue();
+
+            assertEquals(2, receiver.requests.size());
+            ReceivedRequest first = receiver.requests.get(0);
+            ReceivedRequest second = receiver.requests.get(1);
+            assertEquals(event.eventId().toString(), first.eventId());
+            assertEquals(first.eventId(), second.eventId());
+            assertArrayEquals(event.payload(), first.body());
+            assertArrayEquals(first.body(), second.body());
+            JsonNode firstBody = json.readTree(first.body());
+            JsonNode secondBody = json.readTree(second.body());
+            assertEquals(first.eventId(), firstBody.get("eventId").asText());
+            assertEquals(firstBody.get("eventId").asText(), secondBody.get("eventId").asText());
+            assertEquals(firstBody.get("data").get("paymentId").asText(),
+                    secondBody.get("data").get("paymentId").asText());
+            assertEquals(signer.sign(Long.parseLong(first.timestamp()), first.body()), first.signature());
+            assertEquals(signer.sign(Long.parseLong(second.timestamp()), second.body()), second.signature());
+            assertEquals(1, count("webhook_events"));
+            assertEquals(1, count("webhook_deliveries"));
+            assertEquals(2, deliveryAttemptRows(event.eventId()));
+            assertEquals("DELIVERED", deliveryStatus(event.eventId()));
+            assertEquals(2, attemptCount(event.eventId()));
+            assertEquals(2, targetDeliveryCount(event.eventId()));
+            var evidence = runEvents.findByRun(event.runId());
+            assertEquals(1, eventCount(evidence, RunEventType.WEBHOOK_SCHEDULED, event.eventId()));
+            assertEquals(2, eventCount(evidence, RunEventType.WEBHOOK_RESPONSE_OBSERVED, event.eventId()));
+            assertEquals(2, eventCount(evidence, RunEventType.WEBHOOK_DELIVERED, event.eventId()));
         }
     }
 
@@ -179,12 +228,16 @@ class WebhookDeliveryTests {
     }
 
     private WebhookEvent scheduleSucceeded(String url) {
+        return scheduleSucceeded(url, 1);
+    }
+
+    private WebhookEvent scheduleSucceeded(String url, int targetDeliveryCount) {
         TestRunId runId = runs.create(ScenarioId.ASYNC_SUCCESS, url).runId();
         Payment payment = payments.createOrResolve(runId, new IdempotencyKey(UUID.randomUUID().toString()), intent())
                 .payment();
         payments.startProcessing(payment.id());
         payments.markSucceeded(payment.id());
-        return scheduler.schedule(runId, payment.id());
+        return scheduler.schedule(runId, payment.id(), targetDeliveryCount);
     }
 
     private static PaymentIntent intent() {
@@ -201,6 +254,33 @@ class WebhookDeliveryTests {
 
     private int attemptCount(UUID id) {
         return jdbc.queryForObject("SELECT attempt_count FROM webhook_deliveries WHERE event_id = ?", Integer.class, id);
+    }
+
+    private int targetDeliveryCount(UUID id) {
+        return jdbc.queryForObject("SELECT target_delivery_count FROM webhook_deliveries WHERE event_id = ?",
+                Integer.class, id);
+    }
+
+    private int deliveryAttemptRows(UUID id) {
+        return jdbc.queryForObject("SELECT count(*) FROM webhook_delivery_attempts WHERE event_id = ?",
+                Integer.class, id);
+    }
+
+    private boolean claimTokenIsNull(UUID id) {
+        return Boolean.TRUE.equals(jdbc.queryForObject(
+                "SELECT claim_token IS NULL FROM webhook_deliveries WHERE event_id = ?", Boolean.class, id));
+    }
+
+    private boolean claimUntilIsNull(UUID id) {
+        return Boolean.TRUE.equals(jdbc.queryForObject(
+                "SELECT claim_until IS NULL FROM webhook_deliveries WHERE event_id = ?", Boolean.class, id));
+    }
+
+    private static int eventCount(java.util.List<io.github.sye1321.paylab.run.RunEvent> events,
+            RunEventType type, UUID eventId) {
+        return (int) events.stream()
+                .filter(event -> event.eventType() == type && eventId.equals(event.webhookEventId()))
+                .count();
     }
 
     private int lastHttpStatus(UUID id) {
@@ -229,6 +309,36 @@ class WebhookDeliveryTests {
                 received.timestamp.set(exchange.getRequestHeaders().getFirst("PayLab-Timestamp"));
                 received.signature.set(exchange.getRequestHeaders().getFirst("PayLab-Signature"));
                 exchange.sendResponseHeaders(status, -1);
+                exchange.close();
+            });
+            server.start();
+        }
+
+        String url() {
+            return "http://localhost:" + server.getAddress().getPort() + "/webhooks/paylab";
+        }
+
+        @Override
+        public void close() {
+            server.stop(0);
+        }
+    }
+
+    private record ReceivedRequest(byte[] body, String eventId, String timestamp, String signature) {
+    }
+
+    private static final class DuplicateReceiver implements AutoCloseable {
+        private final HttpServer server;
+        private final CopyOnWriteArrayList<ReceivedRequest> requests = new CopyOnWriteArrayList<>();
+
+        DuplicateReceiver() throws IOException {
+            server = HttpServer.create(new InetSocketAddress("localhost", 0), 0);
+            server.createContext("/webhooks/paylab", exchange -> {
+                requests.add(new ReceivedRequest(exchange.getRequestBody().readAllBytes(),
+                        exchange.getRequestHeaders().getFirst("PayLab-Event-Id"),
+                        exchange.getRequestHeaders().getFirst("PayLab-Timestamp"),
+                        exchange.getRequestHeaders().getFirst("PayLab-Signature")));
+                exchange.sendResponseHeaders(204, -1);
                 exchange.close();
             });
             server.start();

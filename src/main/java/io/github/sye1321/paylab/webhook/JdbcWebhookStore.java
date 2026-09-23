@@ -34,6 +34,10 @@ public class JdbcWebhookStore {
     }
 
     public boolean insertEventAndDelivery(WebhookEvent event) {
+        return insertEventAndDelivery(event, 1);
+    }
+
+    public boolean insertEventAndDelivery(WebhookEvent event, int targetDeliveryCount) {
         int inserted = jdbc.update("""
                 INSERT INTO webhook_events (event_id, run_id, payment_id, event_type, payload, created_at)
                 VALUES (?, ?, ?, ?, ?, ?)
@@ -44,9 +48,9 @@ public class JdbcWebhookStore {
             return false;
         }
         jdbc.update("""
-                INSERT INTO webhook_deliveries (event_id, status, due_at)
-                VALUES (?, 'PENDING', ?)
-                """, event.eventId(), Timestamp.from(event.createdAt()));
+                INSERT INTO webhook_deliveries (event_id, status, due_at, target_delivery_count)
+                VALUES (?, 'PENDING', ?, ?)
+                """, event.eventId(), Timestamp.from(event.createdAt()), targetDeliveryCount);
         return true;
     }
 
@@ -79,11 +83,21 @@ public class JdbcWebhookStore {
         transaction.executeWithoutResult(status -> {
             int updated = jdbc.update("""
                     UPDATE webhook_deliveries
-                    SET status = ?, attempt_count = attempt_count + 1, last_http_status = ?,
+                    SET status = CASE
+                            WHEN ? = 'DELIVERED' AND attempt_count + 1 < target_delivery_count THEN 'PENDING'
+                            WHEN ? = 'DELIVERED' THEN 'DELIVERED'
+                            ELSE 'FAILED'
+                        END,
+                        attempt_count = attempt_count + 1,
+                        due_at = CASE
+                            WHEN ? = 'DELIVERED' AND attempt_count + 1 < target_delivery_count THEN now()
+                            ELSE due_at
+                        END,
+                        last_http_status = ?,
                         claim_token = NULL, claim_until = NULL
                     WHERE event_id = ? AND status = 'IN_PROGRESS' AND claim_token = ?
-                    """, outcome == DeliveryOutcome.DELIVERED ? "DELIVERED" : "FAILED",
-                    httpStatus, claim.eventId(), claim.claimToken());
+                    """, outcome.name(), outcome.name(), outcome.name(), httpStatus,
+                    claim.eventId(), claim.claimToken());
             if (updated != 1) {
                 throw new IllegalStateException("Webhook delivery claim is no longer owned");
             }

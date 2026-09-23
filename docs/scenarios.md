@@ -136,13 +136,26 @@ request 2: key=ORDER-1 amountMinor=50000 currency=ETB
 
 **Purpose:** test at-least-once callback delivery.
 
-**Provider behavior:** create one provider event and deliver the exact event identity multiple times.
+**Configuration:** a callback URL is required and `responseDelayMillis` is not accepted.
+
+**Provider behavior:** create one successful provider payment and one immutable
+`PAYMENT_SUCCEEDED` event, then intentionally deliver that event twice. After the first 2xx response,
+the durable delivery returns to `PENDING`; after the second 2xx response, it becomes `DELIVERED`.
+Both requests contain the same event ID and exact persisted payload bytes, while their timestamps and
+signatures are generated per attempt. A non-2xx response or network error is terminal and does not
+trigger the second intentional delivery.
+
+This is not the `WEBHOOK_RETRY` scenario. The two deliveries are the configured successful path, not
+recovery from a temporary failure. The normal `ASYNC_SUCCESS` scenario retains a target of one
+successful delivery. Durable claims are leased, so a worker crash after sending but before recording
+the result can cause an additional attempt beyond the configured target.
 
 **Black-box assertions:** the repeated deliveries occur as configured and merchant responses are recorded.
 
 **Probe-backed assertion:** the merchant processes one logical event / business side effect.
 
-Without probe evidence, exactly-once internal processing is `INCONCLUSIVE` rather than inferred from HTTP acknowledgements.
+No conformance evaluator or merchant probe is implemented for this scenario. Exactly-once internal
+processing therefore cannot be inferred from HTTP acknowledgements.
 
 **Relevant invariants:** INV-06, INV-09.
 

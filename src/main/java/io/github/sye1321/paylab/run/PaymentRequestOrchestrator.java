@@ -17,17 +17,20 @@ public class PaymentRequestOrchestrator {
     private final JdbcRunEventStore events;
     private final JdbcProviderPaymentStore payments;
     private final AsyncSuccessScenarioExecutor asyncSuccess;
+    private final DuplicateWebhookScenarioExecutor duplicateWebhook;
     private final TimeoutBeforeCommitScenarioExecutor timeoutBeforeCommit;
     private final TimeoutAfterCommitScenarioExecutor timeoutAfterCommit;
 
     public PaymentRequestOrchestrator(JdbcTestRunStore runs, JdbcRunEventStore events,
             JdbcProviderPaymentStore payments, AsyncSuccessScenarioExecutor asyncSuccess,
+            DuplicateWebhookScenarioExecutor duplicateWebhook,
             TimeoutBeforeCommitScenarioExecutor timeoutBeforeCommit,
             TimeoutAfterCommitScenarioExecutor timeoutAfterCommit) {
         this.runs = runs;
         this.events = events;
         this.payments = payments;
         this.asyncSuccess = asyncSuccess;
+        this.duplicateWebhook = duplicateWebhook;
         this.timeoutBeforeCommit = timeoutBeforeCommit;
         this.timeoutAfterCommit = timeoutAfterCommit;
     }
@@ -41,6 +44,8 @@ public class PaymentRequestOrchestrator {
         PaymentCreationResult creation = payments.createOrResolve(runId, key, intent);
         return switch (run.scenario()) {
             case ASYNC_SUCCESS -> new PaymentRequestResult(asyncSuccess.execute(runId, creation.payment()), null);
+            case DUPLICATE_WEBHOOK ->
+                    new PaymentRequestResult(duplicateWebhook.execute(runId, creation), null);
             case TIMEOUT_AFTER_COMMIT -> timeoutAfterCommit.execute(run, creation);
             case TIMEOUT_BEFORE_COMMIT -> throw new IllegalStateException("Scenario was already handled");
         };

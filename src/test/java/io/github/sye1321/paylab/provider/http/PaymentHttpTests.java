@@ -128,6 +128,37 @@ class PaymentHttpTests {
     }
 
     @Test
+    void duplicateWebhookSchedulesOneEventWithTwoDeliveryTarget() throws Exception {
+        HttpResponse<String> run = postRun("""
+                {"scenario":"DUPLICATE_WEBHOOK","webhookUrl":"http://localhost:8081/webhooks/paylab"}
+                """);
+        assertEquals(201, run.statusCode());
+        runId = JSON.readTree(run.body()).get("runId").asText();
+
+        HttpResponse<String> response = post(UUID.randomUUID().toString(), VALID_BODY);
+
+        assertEquals(200, response.statusCode());
+        assertEquals("SUCCEEDED", JSON.readTree(response.body()).get("status").asText());
+        assertEquals(1L, count("provider_payments"));
+        assertEquals(1L, count("webhook_events"));
+        assertEquals(1L, count("webhook_deliveries"));
+        assertEquals(2, jdbc.queryForObject("""
+                SELECT d.target_delivery_count FROM webhook_deliveries d
+                JOIN webhook_events e ON e.event_id = d.event_id WHERE e.run_id = ?
+                """, Integer.class, UUID.fromString(runId)));
+        assertEquals(0, jdbc.queryForObject("""
+                SELECT d.attempt_count FROM webhook_deliveries d
+                JOIN webhook_events e ON e.event_id = d.event_id WHERE e.run_id = ?
+                """, Integer.class, UUID.fromString(runId)));
+        assertEquals("PENDING", jdbc.queryForObject("""
+                SELECT d.status FROM webhook_deliveries d
+                JOIN webhook_events e ON e.event_id = d.event_id WHERE e.run_id = ?
+                """, String.class, UUID.fromString(runId)));
+        assertEquals(1, runEventCount("PAYMENT_COMMITTED"));
+        assertEquals(1, runEventCount("WEBHOOK_SCHEDULED"));
+    }
+
+    @Test
     void equivalentReplayIsScenarioIdempotent() throws Exception {
         String key = UUID.randomUUID().toString();
 
@@ -464,6 +495,13 @@ class PaymentHttpTests {
                 """).statusCode());
         assertEquals(400, postRun("""
                 {"scenario":"TIMEOUT_BEFORE_COMMIT","webhookUrl":"http://localhost/webhook",
+                 "responseDelayMillis":10}
+                """).statusCode());
+        assertEquals(400, postRun("""
+                {"scenario":"DUPLICATE_WEBHOOK"}
+                """).statusCode());
+        assertEquals(400, postRun("""
+                {"scenario":"DUPLICATE_WEBHOOK","webhookUrl":"http://localhost/webhook",
                  "responseDelayMillis":10}
                 """).statusCode());
     }

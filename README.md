@@ -105,7 +105,7 @@ Webhook authenticity, replay/duplication behavior, callback targets, secret hand
 
 ## Webhook contract
 
-`ASYNC_SUCCESS` test runs require one callback URL, for example:
+`ASYNC_SUCCESS` and `DUPLICATE_WEBHOOK` test runs require one callback URL, for example:
 
 ```json
 {"scenario":"ASYNC_SUCCESS","webhookUrl":"http://localhost:8081/webhooks/paylab"}
@@ -138,6 +138,15 @@ a literal `.`, and the exact raw request body. The instance secret must be suppl
 Creating a payment for an `ASYNC_SUCCESS` run advances provider truth from `CREATED` through
 `PROCESSING` to `SUCCEEDED`, then durably schedules the signed callback. The payment response
 therefore reports `SUCCEEDED`; callback HTTP delivery remains the webhook worker's responsibility.
+
+`DUPLICATE_WEBHOOK` follows the same provider-state progression but intentionally delivers one
+persisted `PAYMENT_SUCCEEDED` event twice. Both successful deliveries use the same event ID and exact
+raw JSON bytes. Each attempt receives its own timestamp and valid signature. This is distinct from
+retry behavior: any non-2xx response or network error is terminal, so the second delivery is scheduled
+only after the first one succeeds. A worker crash after sending but before recording an acknowledgement
+can still produce additional delivery attempts under the durable lease model. The scenario records
+provider-side delivery evidence but has no conformance evaluator or merchant probe; HTTP 2xx responses
+alone do not prove exactly-once merchant processing.
 
 `TIMEOUT_BEFORE_COMMIT` runs require `responseDelayMillis` from 1 through 30,000 and no webhook URL.
 The first create request is recorded, atomically claims the run's one-shot pre-commit fault, and
