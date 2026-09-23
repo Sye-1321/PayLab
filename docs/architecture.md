@@ -111,7 +111,7 @@ Money is represented as integer minor units plus currency code.
 
 ## Idempotency
 
-A create-payment request carries an idempotency key. PayLab derives a deterministic fingerprint from the material request fields.
+A create-payment request carries an idempotency key. PayLab derives a deterministic fingerprint from the material request fields. The same-key guarantees below apply within a test run.
 
 ```text
 same key + same fingerprint      -> same logical payment

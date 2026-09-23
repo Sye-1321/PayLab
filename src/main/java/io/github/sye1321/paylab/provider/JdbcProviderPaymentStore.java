@@ -7,6 +7,8 @@ import java.util.Optional;
 import java.util.UUID;
 import java.util.function.Consumer;
 
+import io.github.sye1321.paylab.run.TestRunId;
+
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Repository;
 import org.springframework.transaction.PlatformTransactionManager;
@@ -26,10 +28,20 @@ public class JdbcProviderPaymentStore {
         this.transaction.setIsolationLevel(TransactionDefinition.ISOLATION_READ_COMMITTED);
     }
 
-    public Payment createOrResolve(IdempotencyKey key, PaymentIntent intent) {
+    public Payment createOrResolve(TestRunId runId, IdempotencyKey key, PaymentIntent intent) {
+        Objects.requireNonNull(runId, "runId");
         Objects.requireNonNull(key, "key");
         Objects.requireNonNull(intent, "intent");
-        return Objects.requireNonNull(transaction.execute(status -> createOrResolveInTransaction(key, intent)));
+        return Objects.requireNonNull(transaction.execute(status -> createOrResolveInTransaction(runId, key, intent)));
+    }
+
+    public Optional<Payment> findById(TestRunId runId, PaymentId id) {
+        Objects.requireNonNull(runId, "runId");
+        Objects.requireNonNull(id, "id");
+        return jdbc.query("""
+                SELECT payment_id, idempotency_key, amount_minor_units, currency, merchant_reference, status
+                FROM provider_payments WHERE payment_id = ? AND run_id = ?
+                """, JdbcProviderPaymentStore::readPayment, id.value(), runId.value()).stream().findFirst();
     }
 
     public Optional<Payment> findById(PaymentId id) {
@@ -72,18 +84,18 @@ public class JdbcProviderPaymentStore {
         }));
     }
 
-    private Payment createOrResolveInTransaction(IdempotencyKey key, PaymentIntent intent) {
+    private Payment createOrResolveInTransaction(TestRunId runId, IdempotencyKey key, PaymentIntent intent) {
         Payment candidate = new Payment(new PaymentId(UUID.randomUUID().toString()), intent, key);
         String fingerprint = intent.fingerprint();
         var insertedIds = jdbc.query("""
                 INSERT INTO provider_payments
-                    (payment_id, idempotency_key, request_fingerprint, amount_minor_units,
+                    (payment_id, run_id, idempotency_key, request_fingerprint, amount_minor_units,
                      currency, merchant_reference, status)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT (idempotency_key) DO NOTHING
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT (run_id, idempotency_key) DO NOTHING
                 RETURNING payment_id
                 """, (rs, rowNum) -> rs.getString("payment_id"),
-                candidate.id().value(), key.value(), fingerprint, intent.amount().minorUnits(),
+                candidate.id().value(), runId.value(), key.value(), fingerprint, intent.amount().minorUnits(),
                 intent.amount().currency(), intent.merchantReference().value(), candidate.status().name());
 
         if (!insertedIds.isEmpty()) {
@@ -94,9 +106,9 @@ public class JdbcProviderPaymentStore {
         var existing = jdbc.query("""
                 SELECT payment_id, idempotency_key, request_fingerprint, amount_minor_units,
                        currency, merchant_reference, status
-                FROM provider_payments WHERE idempotency_key = ?
+                FROM provider_payments WHERE run_id = ? AND idempotency_key = ?
                 """, (rs, rowNum) -> new StoredPayment(rs.getString("request_fingerprint"), readPayment(rs, rowNum)),
-                key.value()).stream().findFirst().orElseThrow(() ->
+                runId.value(), key.value()).stream().findFirst().orElseThrow(() ->
                 new IllegalStateException("Idempotency winner not found for key: " + key.value()));
 
         if (!existing.fingerprint().equals(fingerprint)) {

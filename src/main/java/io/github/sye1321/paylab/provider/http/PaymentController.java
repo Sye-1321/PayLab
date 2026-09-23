@@ -1,12 +1,15 @@
 package io.github.sye1321.paylab.provider.http;
 
+import java.util.UUID;
+
 import io.github.sye1321.paylab.provider.IdempotencyKey;
-import io.github.sye1321.paylab.provider.JdbcProviderPaymentStore;
 import io.github.sye1321.paylab.provider.MerchantReference;
 import io.github.sye1321.paylab.provider.Money;
 import io.github.sye1321.paylab.provider.PaymentId;
 import io.github.sye1321.paylab.provider.PaymentIntent;
 import io.github.sye1321.paylab.provider.PaymentNotFoundException;
+import io.github.sye1321.paylab.run.PaymentRequestOrchestrator;
+import io.github.sye1321.paylab.run.TestRunId;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.NotBlank;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -21,24 +24,26 @@ import org.springframework.web.bind.annotation.RestController;
 @RequestMapping("/payments")
 public class PaymentController {
 
-    private final JdbcProviderPaymentStore store;
+    private final PaymentRequestOrchestrator requests;
 
-    public PaymentController(JdbcProviderPaymentStore store) {
-        this.store = store;
+    public PaymentController(PaymentRequestOrchestrator requests) {
+        this.requests = requests;
     }
 
     @PostMapping
-    public PaymentResponse create(@RequestHeader("Idempotency-Key") @NotBlank String key,
+    public PaymentResponse create(@RequestHeader("PayLab-Run-Id") UUID runId,
+            @RequestHeader("Idempotency-Key") @NotBlank String key,
             @Valid @RequestBody CreatePaymentRequest request) {
         PaymentIntent intent = new PaymentIntent(
                 new Money(request.amountMinor(), request.currency()),
                 new MerchantReference(request.merchantReference()));
-        return PaymentResponse.from(store.createOrResolve(new IdempotencyKey(key), intent));
+        return PaymentResponse.from(requests.create(new TestRunId(runId), new IdempotencyKey(key), intent));
     }
 
     @GetMapping("/{paymentId}")
-    public PaymentResponse get(@PathVariable String paymentId) {
+    public PaymentResponse get(@RequestHeader("PayLab-Run-Id") UUID runId, @PathVariable String paymentId) {
         PaymentId id = new PaymentId(paymentId);
-        return PaymentResponse.from(store.findById(id).orElseThrow(() -> new PaymentNotFoundException(id)));
+        return PaymentResponse.from(requests.findById(new TestRunId(runId), id)
+                .orElseThrow(() -> new PaymentNotFoundException(id)));
     }
 }
