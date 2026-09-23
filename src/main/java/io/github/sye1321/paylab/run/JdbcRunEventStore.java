@@ -6,6 +6,7 @@ import java.util.List;
 import java.util.UUID;
 
 import io.github.sye1321.paylab.provider.IdempotencyKey;
+import io.github.sye1321.paylab.provider.PaymentId;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Repository;
 
@@ -28,6 +29,19 @@ public class JdbcRunEventStore {
                 INSERT INTO run_events (run_id, event_type, idempotency_key, request_fingerprint)
                 VALUES (?, ?, ?, ?)
                 """, runId.value(), RunEventType.MERCHANT_REQUEST_OBSERVED.name(), key.value(), fingerprint);
+    }
+
+    public void appendPaymentCommitted(TestRunId runId, PaymentId paymentId) {
+        jdbc.update("INSERT INTO run_events (run_id, event_type, payment_id) VALUES (?, ?, ?)",
+                runId.value(), RunEventType.PAYMENT_COMMITTED.name(), paymentId.value());
+    }
+
+    public void appendResponseDelayInjected(TestRunId runId, PaymentId paymentId, int responseDelayMillis) {
+        jdbc.update("""
+                INSERT INTO run_events (run_id, event_type, payment_id, response_delay_millis)
+                VALUES (?, ?, ?, ?)
+                """, runId.value(), RunEventType.RESPONSE_DELAY_INJECTED.name(), paymentId.value(),
+                responseDelayMillis);
     }
 
     public void appendWebhookScheduled(TestRunId runId, UUID webhookEventId) {
@@ -54,7 +68,7 @@ public class JdbcRunEventStore {
     public List<RunEvent> findByRun(TestRunId runId) {
         return jdbc.query("""
                 SELECT event_id, run_id, event_type, occurred_at, idempotency_key, request_fingerprint,
-                       webhook_event_id, http_status, outcome
+                       webhook_event_id, http_status, outcome, payment_id, response_delay_millis
                 FROM run_events WHERE run_id = ? ORDER BY event_id
                 """, JdbcRunEventStore::readEvent, runId.value());
     }
@@ -65,6 +79,12 @@ public class JdbcRunEventStore {
                 rs.getTimestamp("occurred_at").toInstant(),
                 rs.getString("idempotency_key"), rs.getString("request_fingerprint"),
                 rs.getObject("webhook_event_id", UUID.class),
-                rs.getObject("http_status", Integer.class), rs.getString("outcome"));
+                rs.getObject("http_status", Integer.class), rs.getString("outcome"),
+                paymentId(rs), rs.getObject("response_delay_millis", Integer.class));
+    }
+
+    private static PaymentId paymentId(ResultSet rs) throws SQLException {
+        String value = rs.getString("payment_id");
+        return value == null ? null : new PaymentId(value);
     }
 }

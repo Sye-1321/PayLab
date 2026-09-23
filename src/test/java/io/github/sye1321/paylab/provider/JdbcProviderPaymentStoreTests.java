@@ -63,7 +63,7 @@ class JdbcProviderPaymentStoreTests {
         IdempotencyKey key = key();
         PaymentIntent intent = intent(100, "USD", "order-1");
 
-        Payment created = store.createOrResolve(runId, key, intent);
+        Payment created = store.createOrResolve(runId, key, intent).payment();
         assertEquals(PaymentStatus.CREATED, created.status());
         assertEquals(created.id(), store.findById(created.id()).orElseThrow().id());
         assertEquals(intent, store.findById(created.id()).orElseThrow().intent());
@@ -79,9 +79,9 @@ class JdbcProviderPaymentStoreTests {
     @Test
     void equivalentRetryReturnsPersistedPaymentWithoutAnotherRow() {
         IdempotencyKey key = key();
-        Payment first = store.createOrResolve(runId, key, intent(100, "USD", "order-1"));
+        Payment first = store.createOrResolve(runId, key, intent(100, "USD", "order-1")).payment();
 
-        Payment replay = store.createOrResolve(runId, key, intent(100, "USD", "order-1"));
+        Payment replay = store.createOrResolve(runId, key, intent(100, "USD", "order-1")).payment();
 
         assertEquals(first.id(), replay.id());
         assertEquals(1, count(key));
@@ -91,7 +91,7 @@ class JdbcProviderPaymentStoreTests {
     void differentIntentConflictsWithoutChangingOriginal() {
         IdempotencyKey key = key();
         PaymentIntent originalIntent = intent(100, "USD", "order-1");
-        Payment original = store.createOrResolve(runId, key, originalIntent);
+        Payment original = store.createOrResolve(runId, key, originalIntent).payment();
 
         assertThrows(IdempotencyConflictException.class,
                 () -> store.createOrResolve(runId, key, intent(101, "USD", "order-1")));
@@ -110,21 +110,22 @@ class JdbcProviderPaymentStoreTests {
         CountDownLatch start = new CountDownLatch(1);
         ExecutorService executor = Executors.newFixedThreadPool(2);
         try {
-            Callable<Payment> request = () -> {
+            Callable<PaymentCreationResult> request = () -> {
                 ready.countDown();
                 if (!start.await(10, TimeUnit.SECONDS)) {
                     throw new IllegalStateException("Concurrent start timed out");
                 }
                 return store.createOrResolve(runId, key, intent);
             };
-            Future<Payment> first = executor.submit(request);
-            Future<Payment> second = executor.submit(request);
+            Future<PaymentCreationResult> first = executor.submit(request);
+            Future<PaymentCreationResult> second = executor.submit(request);
             assertTrue(ready.await(10, TimeUnit.SECONDS));
             start.countDown();
 
-            Payment firstResult = first.get(30, TimeUnit.SECONDS);
-            Payment secondResult = second.get(30, TimeUnit.SECONDS);
-            assertEquals(firstResult.id(), secondResult.id());
+            PaymentCreationResult firstResult = first.get(30, TimeUnit.SECONDS);
+            PaymentCreationResult secondResult = second.get(30, TimeUnit.SECONDS);
+            assertEquals(firstResult.payment().id(), secondResult.payment().id());
+            assertEquals(1, (firstResult.created() ? 1 : 0) + (secondResult.created() ? 1 : 0));
             assertEquals(1, count(key));
         } finally {
             start.countDown();
@@ -135,7 +136,7 @@ class JdbcProviderPaymentStoreTests {
 
     @Test
     void processingAndSuccessTransitionsPersist() {
-        Payment created = store.createOrResolve(runId, key(), intent(100, "USD", "order-1"));
+        Payment created = store.createOrResolve(runId, key(), intent(100, "USD", "order-1")).payment();
 
         Payment processing = store.startProcessing(created.id());
         assertEquals(PaymentStatus.PROCESSING, processing.status());
@@ -148,7 +149,7 @@ class JdbcProviderPaymentStoreTests {
 
     @Test
     void failureTransitionPersists() {
-        Payment created = store.createOrResolve(runId, key(), intent(100, "USD", "order-1"));
+        Payment created = store.createOrResolve(runId, key(), intent(100, "USD", "order-1")).payment();
         store.startProcessing(created.id());
 
         Payment failed = store.markFailed(created.id());
@@ -159,7 +160,7 @@ class JdbcProviderPaymentStoreTests {
 
     @Test
     void illegalTransitionDoesNotChangeStoredStatusAndMissingPaymentIsDistinct() {
-        Payment created = store.createOrResolve(runId, key(), intent(100, "USD", "order-1"));
+        Payment created = store.createOrResolve(runId, key(), intent(100, "USD", "order-1")).payment();
 
         assertThrows(IllegalPaymentTransitionException.class, () -> store.markSucceeded(created.id()));
         assertEquals(PaymentStatus.CREATED, store.findById(created.id()).orElseThrow().status());
@@ -174,7 +175,7 @@ class JdbcProviderPaymentStoreTests {
 
     @Test
     void concurrentTerminalTransitionsCannotOverwriteEachOther() throws Exception {
-        Payment created = store.createOrResolve(runId, key(), intent(100, "USD", "order-1"));
+        Payment created = store.createOrResolve(runId, key(), intent(100, "USD", "order-1")).payment();
         store.startProcessing(created.id());
         CountDownLatch ready = new CountDownLatch(2);
         CountDownLatch start = new CountDownLatch(1);

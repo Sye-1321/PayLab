@@ -28,7 +28,7 @@ public class JdbcProviderPaymentStore {
         this.transaction.setIsolationLevel(TransactionDefinition.ISOLATION_READ_COMMITTED);
     }
 
-    public Payment createOrResolve(TestRunId runId, IdempotencyKey key, PaymentIntent intent) {
+    public PaymentCreationResult createOrResolve(TestRunId runId, IdempotencyKey key, PaymentIntent intent) {
         Objects.requireNonNull(runId, "runId");
         Objects.requireNonNull(key, "key");
         Objects.requireNonNull(intent, "intent");
@@ -84,7 +84,8 @@ public class JdbcProviderPaymentStore {
         }));
     }
 
-    private Payment createOrResolveInTransaction(TestRunId runId, IdempotencyKey key, PaymentIntent intent) {
+    private PaymentCreationResult createOrResolveInTransaction(TestRunId runId, IdempotencyKey key,
+            PaymentIntent intent) {
         Payment candidate = new Payment(new PaymentId(UUID.randomUUID().toString()), intent, key);
         String fingerprint = intent.fingerprint();
         var insertedIds = jdbc.query("""
@@ -99,7 +100,7 @@ public class JdbcProviderPaymentStore {
                 intent.amount().currency(), intent.merchantReference().value(), candidate.status().name());
 
         if (!insertedIds.isEmpty()) {
-            return candidate;
+            return new PaymentCreationResult(candidate, true);
         }
 
         // This separate statement sees the winner after PostgreSQL resolves the unique-key race.
@@ -114,7 +115,7 @@ public class JdbcProviderPaymentStore {
         if (!existing.fingerprint().equals(fingerprint)) {
             throw new IdempotencyConflictException(key);
         }
-        return existing.payment();
+        return new PaymentCreationResult(existing.payment(), false);
     }
 
     private static Payment readPayment(ResultSet rs, int rowNum) throws SQLException {

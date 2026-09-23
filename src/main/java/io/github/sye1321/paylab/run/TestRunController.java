@@ -6,7 +6,6 @@ import java.util.UUID;
 
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.NotNull;
-import jakarta.validation.constraints.NotBlank;
 import org.springframework.http.HttpStatus;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
@@ -33,7 +32,28 @@ public class TestRunController {
     @PostMapping
     @ResponseStatus(HttpStatus.CREATED)
     public TestRunResponse create(@Valid @RequestBody CreateTestRunRequest request) {
-        return TestRunResponse.from(store.create(request.scenario(), webhookUrls.validate(request.webhookUrl())));
+        String webhookUrl;
+        Integer responseDelayMillis;
+        switch (request.scenario()) {
+            case ASYNC_SUCCESS -> {
+                if (request.webhookUrl() == null || request.webhookUrl().isBlank()
+                        || request.responseDelayMillis() != null) {
+                    throw new IllegalArgumentException("Invalid ASYNC_SUCCESS configuration");
+                }
+                webhookUrl = webhookUrls.validate(request.webhookUrl());
+                responseDelayMillis = null;
+            }
+            case TIMEOUT_AFTER_COMMIT -> {
+                if (request.webhookUrl() != null || request.responseDelayMillis() == null
+                        || request.responseDelayMillis() <= 0 || request.responseDelayMillis() > 30_000) {
+                    throw new IllegalArgumentException("Invalid TIMEOUT_AFTER_COMMIT configuration");
+                }
+                webhookUrl = null;
+                responseDelayMillis = request.responseDelayMillis();
+            }
+            default -> throw new IllegalArgumentException("Unsupported scenario");
+        }
+        return TestRunResponse.from(store.create(request.scenario(), webhookUrl, responseDelayMillis));
     }
 
     @GetMapping("/{runId}")
@@ -48,24 +68,25 @@ public class TestRunController {
         return events.findByRun(id).stream().map(RunEventResponse::from).toList();
     }
 
-    public record CreateTestRunRequest(@NotNull ScenarioId scenario, @NotBlank String webhookUrl) {
+    public record CreateTestRunRequest(@NotNull ScenarioId scenario, String webhookUrl, Integer responseDelayMillis) {
     }
 
     public record TestRunResponse(UUID runId, ScenarioId scenario, int scenarioVersion,
-            Instant createdAt, String webhookUrl) {
+            Instant createdAt, String webhookUrl, Integer responseDelayMillis) {
         static TestRunResponse from(TestRun run) {
             return new TestRunResponse(run.runId().value(), run.scenario(), run.scenarioVersion(), run.createdAt(),
-                    run.webhookUrl());
+                    run.webhookUrl(), run.responseDelayMillis());
         }
     }
 
     public record RunEventResponse(long eventId, UUID runId, RunEventType eventType, Instant occurredAt,
             String idempotencyKey, String requestFingerprint, UUID webhookEventId,
-            Integer httpStatus, String outcome) {
+            Integer httpStatus, String outcome, String paymentId, Integer responseDelayMillis) {
         static RunEventResponse from(RunEvent event) {
             return new RunEventResponse(event.eventId(), event.runId().value(), event.eventType(),
                     event.occurredAt(), event.idempotencyKey(), event.requestFingerprint(),
-                    event.webhookEventId(), event.httpStatus(), event.outcome());
+                    event.webhookEventId(), event.httpStatus(), event.outcome(),
+                    event.paymentId() == null ? null : event.paymentId().value(), event.responseDelayMillis());
         }
     }
 }

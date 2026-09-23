@@ -5,9 +5,12 @@ import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
+import java.net.http.HttpTimeoutException;
+import java.time.Duration;
 import java.util.UUID;
 import java.util.concurrent.Callable;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutionException;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
@@ -29,6 +32,8 @@ import tools.jackson.databind.ObjectMapper;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertInstanceOf;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
@@ -220,6 +225,109 @@ class PaymentHttpTests {
     }
 
     @Test
+    void timeoutAfterCommitTimesOutOnceAndSameKeyReplaySafelyResolvesPayment() throws Exception {
+        int responseDelayMillis = 5_000;
+        runId = createTimeoutRun(responseDelayMillis);
+        String key = UUID.randomUUID().toString();
+        var executor = Executors.newSingleThreadExecutor();
+        try {
+            Future<HttpResponse<String>> firstRequest = executor.submit(
+                    () -> post(key, VALID_BODY, Duration.ofMillis(2_000)));
+
+            awaitResponseDelayEvidence(firstRequest);
+
+            assertEquals(1L, count("provider_payments"));
+            String paymentId = jdbc.queryForObject("""
+                    SELECT payment_id FROM provider_payments WHERE run_id = ?
+                    """, String.class, UUID.fromString(runId));
+            assertEquals("SUCCEEDED", jdbc.queryForObject("""
+                    SELECT status FROM provider_payments WHERE run_id = ? AND payment_id = ?
+                    """, String.class, UUID.fromString(runId), paymentId));
+            assertEquals(1, runEventCount("PAYMENT_COMMITTED"));
+            assertEquals(1, runEventCount("RESPONSE_DELAY_INJECTED"));
+            long committedEventId = runEventId("PAYMENT_COMMITTED");
+            long delayEventId = runEventId("RESPONSE_DELAY_INJECTED");
+            assertTrue(committedEventId < delayEventId);
+            assertEquals(responseDelayMillis, jdbc.queryForObject("""
+                    SELECT response_delay_millis FROM run_events
+                    WHERE run_id = ? AND event_type = 'RESPONSE_DELAY_INJECTED'
+                    """, Integer.class, UUID.fromString(runId)));
+
+            ExecutionException timeout = assertThrows(ExecutionException.class,
+                    () -> firstRequest.get(5, TimeUnit.SECONDS));
+            assertInstanceOf(HttpTimeoutException.class, timeout.getCause());
+
+            HttpResponse<String> replay = post(key, VALID_BODY);
+            assertEquals(200, replay.statusCode());
+            JsonNode payment = JSON.readTree(replay.body());
+            assertEquals(paymentId, payment.get("paymentId").asText());
+            assertEquals("SUCCEEDED", payment.get("status").asText());
+            assertEquals(1L, count("provider_payments"));
+            assertEquals(0L, count("webhook_events"));
+            assertEquals(0L, count("webhook_deliveries"));
+            assertEquals(1, runEventCount("PAYMENT_COMMITTED"));
+            assertEquals(1, runEventCount("RESPONSE_DELAY_INJECTED"));
+            assertEquals(2, runEventCount("MERCHANT_REQUEST_OBSERVED"));
+
+            JsonNode events = getEvents();
+            assertEquals(5, events.size());
+            assertEquals("RUN_STARTED", events.get(0).get("eventType").asText());
+            assertEquals("MERCHANT_REQUEST_OBSERVED", events.get(1).get("eventType").asText());
+            assertEquals("PAYMENT_COMMITTED", events.get(2).get("eventType").asText());
+            assertEquals(paymentId, events.get(2).get("paymentId").asText());
+            assertEquals("RESPONSE_DELAY_INJECTED", events.get(3).get("eventType").asText());
+            assertEquals(responseDelayMillis, events.get(3).get("responseDelayMillis").asInt());
+            assertEquals("MERCHANT_REQUEST_OBSERVED", events.get(4).get("eventType").asText());
+        } finally {
+            executor.shutdownNow();
+            assertTrue(executor.awaitTermination(10, TimeUnit.SECONDS));
+        }
+    }
+
+    @Test
+    void timeoutAfterCommitDifferentKeyPreservesDuplicateRiskEvidence() throws Exception {
+        runId = createTimeoutRun(20);
+
+        HttpResponse<String> first = post("first-key", VALID_BODY);
+        HttpResponse<String> second = post("second-key", VALID_BODY);
+
+        assertEquals(200, first.statusCode());
+        assertEquals(200, second.statusCode());
+        assertFalse(JSON.readTree(first.body()).get("paymentId").asText()
+                .equals(JSON.readTree(second.body()).get("paymentId").asText()));
+        assertEquals(2L, count("provider_payments"));
+        JsonNode events = getEvents();
+        assertEquals(2, eventCount(events, "PAYMENT_COMMITTED"));
+        JsonNode firstObserved = event(events, "MERCHANT_REQUEST_OBSERVED", 0);
+        JsonNode secondObserved = event(events, "MERCHANT_REQUEST_OBSERVED", 1);
+        assertEquals("first-key", firstObserved.get("idempotencyKey").asText());
+        assertEquals("second-key", secondObserved.get("idempotencyKey").asText());
+        assertEquals(firstObserved.get("requestFingerprint").asText(),
+                secondObserved.get("requestFingerprint").asText());
+    }
+
+    @Test
+    void runConfigurationRejectsContradictoryScenarioParameters() throws Exception {
+        assertEquals(400, postRun("""
+                {"scenario":"ASYNC_SUCCESS"}
+                """).statusCode());
+        assertEquals(400, postRun("""
+                {"scenario":"ASYNC_SUCCESS","webhookUrl":"http://localhost:8081/webhooks/paylab",
+                 "responseDelayMillis":10}
+                """).statusCode());
+        assertEquals(400, postRun("""
+                {"scenario":"TIMEOUT_AFTER_COMMIT"}
+                """).statusCode());
+        assertEquals(400, postRun("""
+                {"scenario":"TIMEOUT_AFTER_COMMIT","responseDelayMillis":30001}
+                """).statusCode());
+        assertEquals(400, postRun("""
+                {"scenario":"TIMEOUT_AFTER_COMMIT","webhookUrl":"http://localhost/webhook",
+                 "responseDelayMillis":10}
+                """).statusCode());
+    }
+
+    @Test
     void missingPaymentReturns404() throws Exception {
         HttpResponse<String> response = get(UUID.randomUUID().toString());
 
@@ -305,12 +413,20 @@ class PaymentHttpTests {
     }
 
     private HttpResponse<String> post(String key, String body) throws IOException, InterruptedException {
+        return post(key, body, null);
+    }
+
+    private HttpResponse<String> post(String key, String body, Duration timeout)
+            throws IOException, InterruptedException {
         HttpRequest.Builder request = HttpRequest.newBuilder(URI.create("http://localhost:" + port + "/payments"))
                 .header("Content-Type", "application/json")
                 .header("PayLab-Run-Id", runId)
                 .POST(HttpRequest.BodyPublishers.ofString(body));
         if (key != null) {
             request.header("Idempotency-Key", key);
+        }
+        if (timeout != null) {
+            request.timeout(timeout);
         }
         return HTTP.send(request.build(), HttpResponse.BodyHandlers.ofString());
     }
@@ -323,13 +439,28 @@ class PaymentHttpTests {
     }
 
     private HttpResponse<String> postRun() throws IOException, InterruptedException {
+        return postRun("""
+                {"scenario":"ASYNC_SUCCESS","webhookUrl":"http://localhost:8081/webhooks/paylab"}
+                """);
+    }
+
+    private HttpResponse<String> postRun(String body) throws IOException, InterruptedException {
         HttpRequest request = HttpRequest.newBuilder(URI.create("http://localhost:" + port + "/test-runs"))
                 .header("Content-Type", "application/json")
-                .POST(HttpRequest.BodyPublishers.ofString("""
-                        {"scenario":"ASYNC_SUCCESS","webhookUrl":"http://localhost:8081/webhooks/paylab"}
-                        """))
+                .POST(HttpRequest.BodyPublishers.ofString(body))
                 .build();
         return HTTP.send(request, HttpResponse.BodyHandlers.ofString());
+    }
+
+    private String createTimeoutRun(int delayMillis) throws Exception {
+        HttpResponse<String> response = postRun("""
+                {"scenario":"TIMEOUT_AFTER_COMMIT","responseDelayMillis":%d}
+                """.formatted(delayMillis));
+        assertEquals(201, response.statusCode());
+        JsonNode body = JSON.readTree(response.body());
+        assertEquals(delayMillis, body.get("responseDelayMillis").asInt());
+        assertTrue(body.get("webhookUrl").isNull());
+        return body.get("runId").asText();
     }
 
     private JsonNode getEvents() throws Exception {
@@ -362,5 +493,41 @@ class PaymentHttpTests {
             }
         }
         return count;
+    }
+
+    private void awaitResponseDelayEvidence(Future<?> firstRequest) throws Exception {
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+        while (System.nanoTime() < deadline) {
+            if (runEventCount("RESPONSE_DELAY_INJECTED") == 1) {
+                return;
+            }
+            if (firstRequest.isDone()) {
+                throw new AssertionError("First request completed before response-delay evidence became visible");
+            }
+            Thread.sleep(20);
+        }
+        throw new AssertionError("Response-delay evidence did not become visible within 5 seconds");
+    }
+
+    private int runEventCount(String eventType) {
+        return jdbc.queryForObject("""
+                SELECT count(*) FROM run_events WHERE run_id = ? AND event_type = ?
+                """, Integer.class, UUID.fromString(runId), eventType);
+    }
+
+    private long runEventId(String eventType) {
+        return jdbc.queryForObject("""
+                SELECT event_id FROM run_events WHERE run_id = ? AND event_type = ?
+                """, Long.class, UUID.fromString(runId), eventType);
+    }
+
+    private static JsonNode event(JsonNode events, String type, int occurrence) {
+        int seen = 0;
+        for (JsonNode event : events) {
+            if (type.equals(event.get("eventType").asText()) && seen++ == occurrence) {
+                return event;
+            }
+        }
+        throw new AssertionError("Missing event " + type + " occurrence " + occurrence);
     }
 }

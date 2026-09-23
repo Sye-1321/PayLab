@@ -76,7 +76,7 @@ class WebhookDeliveryTests {
             throws Exception {
         TestRunId runId = runs.create(ScenarioId.ASYNC_SUCCESS, "http://localhost:8081/webhooks/paylab").runId();
         Payment payment = payments.createOrResolve(runId, new IdempotencyKey(UUID.randomUUID().toString()),
-                intent());
+                intent()).payment();
         long before = count("webhook_events");
         assertThrows(WebhookSchedulingException.class, () -> scheduler.schedule(runId, payment.id()));
         assertEquals(before, count("webhook_events"));
@@ -106,7 +106,7 @@ class WebhookDeliveryTests {
         TestRunId runId = runs.create(ScenarioId.ASYNC_SUCCESS, "http://localhost:8081/webhooks/paylab").runId();
         jdbc.update("UPDATE test_runs SET webhook_url = NULL WHERE run_id = ?", runId.value());
         Payment payment = payments.createOrResolve(runId, new IdempotencyKey(UUID.randomUUID().toString()),
-                intent());
+                intent()).payment();
         payments.startProcessing(payment.id());
         payments.markSucceeded(payment.id());
 
@@ -180,7 +180,8 @@ class WebhookDeliveryTests {
 
     private WebhookEvent scheduleSucceeded(String url) {
         TestRunId runId = runs.create(ScenarioId.ASYNC_SUCCESS, url).runId();
-        Payment payment = payments.createOrResolve(runId, new IdempotencyKey(UUID.randomUUID().toString()), intent());
+        Payment payment = payments.createOrResolve(runId, new IdempotencyKey(UUID.randomUUID().toString()), intent())
+                .payment();
         payments.startProcessing(payment.id());
         payments.markSucceeded(payment.id());
         return scheduler.schedule(runId, payment.id());

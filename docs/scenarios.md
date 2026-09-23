@@ -59,10 +59,13 @@ The create-payment response reflects the resulting authoritative `SUCCEEDED` pro
 
 1. accept the create-payment request;
 2. persist the idempotency record and payment;
-3. commit provider state;
-4. deliberately prevent the normal HTTP response from reaching the merchant.
+3. progress and durably commit provider state as `SUCCEEDED`;
+4. record the committed-payment evidence;
+5. delay the normal HTTP response by the run's configured duration.
 
-The first implementation may realize the fault by delaying the response beyond the configured client timeout. A true connection reset may be added separately; the report must describe the fault that was actually injected.
+The implemented fault is a bounded application response delay, not a connection reset or packet loss.
+The configured delay must exceed the merchant client's HTTP timeout to produce an observable timeout.
+An equivalent same-key replay resolves the existing payment without injecting the delay again.
 
 **Provider truth:** the payment exists even though the merchant did not receive a successful response.
 

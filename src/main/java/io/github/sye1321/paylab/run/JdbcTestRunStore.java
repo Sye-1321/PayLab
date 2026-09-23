@@ -22,19 +22,24 @@ public class JdbcTestRunStore {
 
     @Transactional
     public TestRun create(ScenarioId scenario, String webhookUrl) {
+        return create(scenario, webhookUrl, null);
+    }
+
+    @Transactional
+    public TestRun create(ScenarioId scenario, String webhookUrl, Integer responseDelayMillis) {
         TestRunId id = new TestRunId(UUID.randomUUID());
         TestRun run = jdbc.queryForObject("""
-                INSERT INTO test_runs (run_id, scenario_id, scenario_version, webhook_url)
-                VALUES (?, ?, 1, ?)
-                RETURNING run_id, scenario_id, scenario_version, created_at, webhook_url
-                """, JdbcTestRunStore::readRun, id.value(), scenario.name(), webhookUrl);
+                INSERT INTO test_runs (run_id, scenario_id, scenario_version, webhook_url, response_delay_millis)
+                VALUES (?, ?, 1, ?, ?)
+                RETURNING run_id, scenario_id, scenario_version, created_at, webhook_url, response_delay_millis
+                """, JdbcTestRunStore::readRun, id.value(), scenario.name(), webhookUrl, responseDelayMillis);
         events.appendRunStarted(id);
         return run;
     }
 
     public Optional<TestRun> findById(TestRunId id) {
         return jdbc.query("""
-                SELECT run_id, scenario_id, scenario_version, created_at, webhook_url
+                SELECT run_id, scenario_id, scenario_version, created_at, webhook_url, response_delay_millis
                 FROM test_runs WHERE run_id = ?
                 """, JdbcTestRunStore::readRun, id.value()).stream().findFirst();
     }
@@ -47,6 +52,7 @@ public class JdbcTestRunStore {
         return new TestRun(new TestRunId(rs.getObject("run_id", UUID.class)),
                 ScenarioId.valueOf(rs.getString("scenario_id")),
                 rs.getInt("scenario_version"),
-                rs.getTimestamp("created_at").toInstant(), rs.getString("webhook_url"));
+                rs.getTimestamp("created_at").toInstant(), rs.getString("webhook_url"),
+                rs.getObject("response_delay_millis", Integer.class));
     }
 }

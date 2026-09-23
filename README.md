@@ -139,6 +139,12 @@ Creating a payment for an `ASYNC_SUCCESS` run advances provider truth from `CREA
 `PROCESSING` to `SUCCEEDED`, then durably schedules the signed callback. The payment response
 therefore reports `SUCCEEDED`; callback HTTP delivery remains the webhook worker's responsibility.
 
+`TIMEOUT_AFTER_COMMIT` runs require `responseDelayMillis` from 1 through 30,000 and do not accept a
+webhook URL. A newly created payment reaches durable `SUCCEEDED` state before PayLab applies the
+configured application response delay. To observe a timeout, the merchant client's HTTP timeout must
+be shorter than that delay. A same-key equivalent retry resolves normally without applying the delay
+again.
+
 ## Documentation
 
 - [`docs/invariants.md`](docs/invariants.md) — payment-safety rules PayLab evaluates

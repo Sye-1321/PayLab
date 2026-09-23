@@ -9,6 +9,8 @@ import io.github.sye1321.paylab.provider.PaymentId;
 import io.github.sye1321.paylab.provider.PaymentIntent;
 import io.github.sye1321.paylab.provider.PaymentNotFoundException;
 import io.github.sye1321.paylab.run.PaymentRequestOrchestrator;
+import io.github.sye1321.paylab.run.PaymentRequestResult;
+import io.github.sye1321.paylab.run.ResponseDelayApplier;
 import io.github.sye1321.paylab.run.TestRunId;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.NotBlank;
@@ -25,9 +27,11 @@ import org.springframework.web.bind.annotation.RestController;
 public class PaymentController {
 
     private final PaymentRequestOrchestrator requests;
+    private final ResponseDelayApplier responseDelays;
 
-    public PaymentController(PaymentRequestOrchestrator requests) {
+    public PaymentController(PaymentRequestOrchestrator requests, ResponseDelayApplier responseDelays) {
         this.requests = requests;
+        this.responseDelays = responseDelays;
     }
 
     @PostMapping
@@ -37,7 +41,10 @@ public class PaymentController {
         PaymentIntent intent = new PaymentIntent(
                 new Money(request.amountMinor(), request.currency()),
                 new MerchantReference(request.merchantReference()));
-        return PaymentResponse.from(requests.create(new TestRunId(runId), new IdempotencyKey(key), intent));
+        TestRunId testRunId = new TestRunId(runId);
+        PaymentRequestResult result = requests.create(testRunId, new IdempotencyKey(key), intent);
+        responseDelays.apply(testRunId, result.payment().id(), result.responseDelayMillis());
+        return PaymentResponse.from(result.payment());
     }
 
     @GetMapping("/{paymentId}")
