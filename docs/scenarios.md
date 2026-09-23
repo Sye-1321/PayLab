@@ -27,7 +27,9 @@ A PayLab scenario defines the provider behavior and fault conditions for one tes
 2. persist the payment;
 3. advance provider state through normal processing;
 4. return the normal API response;
-5. deliver a signed `SUCCEEDED` webhook.
+5. durably schedule a signed `SUCCEEDED` webhook for independent worker delivery.
+
+The create-payment response reflects the resulting authoritative `SUCCEEDED` provider state.
 
 **Black-box evidence:** create request, provider payment identity, callback delivery, callback response, optional status query.
 

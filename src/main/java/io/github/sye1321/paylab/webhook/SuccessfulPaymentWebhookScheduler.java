@@ -62,9 +62,13 @@ public class SuccessfulPaymentWebhookScheduler {
         }
         WebhookEvent event = new WebhookEvent(eventId, runId, paymentId,
                 WebhookEventType.PAYMENT_SUCCEEDED, rawPayload, createdAt);
-        webhooks.insertEventAndDelivery(event);
-        runEvents.appendWebhookScheduled(runId, eventId);
-        return event;
+        if (webhooks.insertEventAndDelivery(event)) {
+            runEvents.appendWebhookScheduled(runId, eventId);
+            return event;
+        }
+        return webhooks.findEvent(runId, paymentId, WebhookEventType.PAYMENT_SUCCEEDED)
+                .orElseThrow(() -> new IllegalStateException(
+                        "Successful webhook winner not found for payment: " + paymentId.value()));
     }
 
     public record WebhookPayload(UUID eventId, WebhookEventType type, Instant createdAt, PaymentData data) {

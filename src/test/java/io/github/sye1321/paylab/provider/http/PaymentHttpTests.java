@@ -6,11 +6,14 @@ import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.util.UUID;
+import java.util.concurrent.Callable;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
 
-import io.github.sye1321.paylab.provider.JdbcProviderPaymentStore;
 import io.github.sye1321.paylab.provider.MerchantReference;
 import io.github.sye1321.paylab.provider.Money;
-import io.github.sye1321.paylab.provider.PaymentId;
 import io.github.sye1321.paylab.provider.PaymentIntent;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -53,9 +56,6 @@ class PaymentHttpTests {
     private int port;
 
     @Autowired
-    private JdbcProviderPaymentStore store;
-
-    @Autowired
     private JdbcTemplate jdbc;
 
     private String runId;
@@ -88,7 +88,7 @@ class PaymentHttpTests {
     }
 
     @Test
-    void createReturnsProviderPaymentRepresentation() throws Exception {
+    void asyncSuccessCompletesPaymentAndSchedulesOneDurableWebhook() throws Exception {
         String key = UUID.randomUUID().toString();
         HttpResponse<String> response = post(key, VALID_BODY);
 
@@ -98,10 +98,10 @@ class PaymentHttpTests {
         assertEquals(10000, body.get("amountMinor").asLong());
         assertEquals("ETB", body.get("currency").asText());
         assertEquals("order-123", body.get("merchantReference").asText());
-        assertEquals("CREATED", body.get("status").asText());
+        assertEquals("SUCCEEDED", body.get("status").asText());
         assertFalse(body.has("requestFingerprint"));
         JsonNode events = getEvents();
-        assertEquals(2, events.size());
+        assertEquals(3, events.size());
         JsonNode observed = events.get(1);
         assertEquals("MERCHANT_REQUEST_OBSERVED", observed.get("eventType").asText());
         assertEquals(key, observed.get("idempotencyKey").asText());
@@ -110,10 +110,20 @@ class PaymentHttpTests {
         assertEquals(observed.get("requestFingerprint").asText(), jdbc.queryForObject(
                 "SELECT request_fingerprint FROM provider_payments WHERE payment_id = ?", String.class,
                 body.get("paymentId").asText()));
+        assertEquals("SUCCEEDED", JSON.readTree(get(body.get("paymentId").asText()).body())
+                .get("status").asText());
+        assertEquals(1L, count("webhook_events"));
+        assertEquals(1L, count("webhook_deliveries"));
+        assertEquals("PENDING", jdbc.queryForObject("""
+                SELECT d.status FROM webhook_deliveries d
+                JOIN webhook_events e ON e.event_id = d.event_id
+                WHERE e.run_id = ? AND e.payment_id = ?
+                """, String.class, UUID.fromString(runId), body.get("paymentId").asText()));
+        assertEquals("WEBHOOK_SCHEDULED", events.get(2).get("eventType").asText());
     }
 
     @Test
-    void equivalentReplayReturnsSamePaymentId() throws Exception {
+    void equivalentReplayIsScenarioIdempotent() throws Exception {
         String key = UUID.randomUUID().toString();
 
         HttpResponse<String> first = post(key, VALID_BODY);
@@ -123,17 +133,22 @@ class PaymentHttpTests {
         assertEquals(200, replay.statusCode());
         assertEquals(JSON.readTree(first.body()).get("paymentId").asText(),
                 JSON.readTree(replay.body()).get("paymentId").asText());
+        assertEquals("SUCCEEDED", JSON.readTree(replay.body()).get("status").asText());
         JsonNode events = getEvents();
-        assertEquals(3, events.size());
+        assertEquals(4, events.size());
         assertEquals("RUN_STARTED", events.get(0).get("eventType").asText());
         assertEquals("MERCHANT_REQUEST_OBSERVED", events.get(1).get("eventType").asText());
-        assertEquals("MERCHANT_REQUEST_OBSERVED", events.get(2).get("eventType").asText());
+        assertEquals("WEBHOOK_SCHEDULED", events.get(2).get("eventType").asText());
+        assertEquals("MERCHANT_REQUEST_OBSERVED", events.get(3).get("eventType").asText());
         assertEquals(key, events.get(1).get("idempotencyKey").asText());
-        assertEquals(key, events.get(2).get("idempotencyKey").asText());
+        assertEquals(key, events.get(3).get("idempotencyKey").asText());
         assertEquals(events.get(1).get("requestFingerprint").asText(),
-                events.get(2).get("requestFingerprint").asText());
-        assertTrue(events.get(0).get("eventId").asLong() < events.get(1).get("eventId").asLong());
-        assertTrue(events.get(1).get("eventId").asLong() < events.get(2).get("eventId").asLong());
+                events.get(3).get("requestFingerprint").asText());
+        assertEquals(1L, count("provider_payments"));
+        assertEquals(1L, count("webhook_events"));
+        assertEquals(1L, count("webhook_deliveries"));
+        assertEquals(1, eventCount(events, "WEBHOOK_SCHEDULED"));
+        assertEquals(2, eventCount(events, "MERCHANT_REQUEST_OBSERVED"));
     }
 
     @Test
@@ -149,7 +164,7 @@ class PaymentHttpTests {
 
         assertEquals(409, conflict.statusCode());
         assertEquals("IDEMPOTENCY_CONFLICT", JSON.readTree(conflict.body()).get("code").asText());
-        assertEquals(3, getEvents().size());
+        assertEquals(4, getEvents().size());
         HttpResponse<String> original = get(id);
         assertEquals(10000, JSON.readTree(original.body()).get("amountMinor").asLong());
     }
@@ -158,14 +173,50 @@ class PaymentHttpTests {
     void lookupReturnsCurrentProviderState() throws Exception {
         HttpResponse<String> created = post(UUID.randomUUID().toString(), VALID_BODY);
         String id = JSON.readTree(created.body()).get("paymentId").asText();
-        store.startProcessing(new PaymentId(id));
-        store.markSucceeded(new PaymentId(id));
 
         HttpResponse<String> response = get(id);
 
         assertEquals(200, response.statusCode());
         assertEquals(id, JSON.readTree(response.body()).get("paymentId").asText());
         assertEquals("SUCCEEDED", JSON.readTree(response.body()).get("status").asText());
+    }
+
+    @Test
+    void concurrentEquivalentRequestsConvergeOnOneSucceededPaymentAndWebhook() throws Exception {
+        String key = UUID.randomUUID().toString();
+        CountDownLatch ready = new CountDownLatch(2);
+        CountDownLatch start = new CountDownLatch(1);
+        var executor = Executors.newFixedThreadPool(2);
+        try {
+            Callable<HttpResponse<String>> request = () -> {
+                ready.countDown();
+                if (!start.await(10, TimeUnit.SECONDS)) {
+                    throw new IllegalStateException("Concurrent start timed out");
+                }
+                return post(key, VALID_BODY);
+            };
+            Future<HttpResponse<String>> first = executor.submit(request);
+            Future<HttpResponse<String>> second = executor.submit(request);
+            assertTrue(ready.await(10, TimeUnit.SECONDS));
+            start.countDown();
+
+            HttpResponse<String> firstResponse = first.get(30, TimeUnit.SECONDS);
+            HttpResponse<String> secondResponse = second.get(30, TimeUnit.SECONDS);
+            assertEquals(200, firstResponse.statusCode());
+            assertEquals(200, secondResponse.statusCode());
+            JsonNode firstBody = JSON.readTree(firstResponse.body());
+            JsonNode secondBody = JSON.readTree(secondResponse.body());
+            assertEquals(firstBody.get("paymentId").asText(), secondBody.get("paymentId").asText());
+            assertEquals("SUCCEEDED", firstBody.get("status").asText());
+            assertEquals("SUCCEEDED", secondBody.get("status").asText());
+            assertEquals(1L, count("provider_payments"));
+            assertEquals(1L, count("webhook_events"));
+            assertEquals(1L, count("webhook_deliveries"));
+        } finally {
+            start.countDown();
+            executor.shutdownNow();
+            assertTrue(executor.awaitTermination(10, TimeUnit.SECONDS));
+        }
     }
 
     @Test
@@ -287,5 +338,29 @@ class PaymentHttpTests {
         HttpResponse<String> response = HTTP.send(request, HttpResponse.BodyHandlers.ofString());
         assertEquals(200, response.statusCode());
         return JSON.readTree(response.body());
+    }
+
+    private long count(String table) {
+        String sql = switch (table) {
+            case "provider_payments", "webhook_events" ->
+                    "SELECT count(*) FROM " + table + " WHERE run_id = ?";
+            case "webhook_deliveries" -> """
+                    SELECT count(*) FROM webhook_deliveries d
+                    JOIN webhook_events e ON e.event_id = d.event_id
+                    WHERE e.run_id = ?
+                    """;
+            default -> throw new IllegalArgumentException("Unsupported table: " + table);
+        };
+        return jdbc.queryForObject(sql, Long.class, UUID.fromString(runId));
+    }
+
+    private static int eventCount(JsonNode events, String type) {
+        int count = 0;
+        for (JsonNode event : events) {
+            if (type.equals(event.get("eventType").asText())) {
+                count++;
+            }
+        }
+        return count;
     }
 }

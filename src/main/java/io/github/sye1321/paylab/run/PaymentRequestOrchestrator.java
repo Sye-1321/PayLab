@@ -15,18 +15,23 @@ public class PaymentRequestOrchestrator {
     private final JdbcTestRunStore runs;
     private final JdbcRunEventStore events;
     private final JdbcProviderPaymentStore payments;
+    private final AsyncSuccessScenarioExecutor asyncSuccess;
 
     public PaymentRequestOrchestrator(JdbcTestRunStore runs, JdbcRunEventStore events,
-            JdbcProviderPaymentStore payments) {
+            JdbcProviderPaymentStore payments, AsyncSuccessScenarioExecutor asyncSuccess) {
         this.runs = runs;
         this.events = events;
         this.payments = payments;
+        this.asyncSuccess = asyncSuccess;
     }
 
     public Payment create(TestRunId runId, IdempotencyKey key, PaymentIntent intent) {
-        runs.require(runId);
+        TestRun run = runs.require(runId);
         events.appendMerchantRequestObserved(runId, key, intent.fingerprint());
-        return payments.createOrResolve(runId, key, intent);
+        Payment payment = payments.createOrResolve(runId, key, intent);
+        return switch (run.scenario()) {
+            case ASYNC_SUCCESS -> asyncSuccess.execute(runId, payment);
+        };
     }
 
     public Optional<Payment> findById(TestRunId runId, PaymentId id) {

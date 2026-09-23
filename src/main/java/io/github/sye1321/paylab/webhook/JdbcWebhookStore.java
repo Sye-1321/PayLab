@@ -33,16 +33,21 @@ public class JdbcWebhookStore {
         this.claimSeconds = claimSeconds;
     }
 
-    public void insertEventAndDelivery(WebhookEvent event) {
-        jdbc.update("""
+    public boolean insertEventAndDelivery(WebhookEvent event) {
+        int inserted = jdbc.update("""
                 INSERT INTO webhook_events (event_id, run_id, payment_id, event_type, payload, created_at)
                 VALUES (?, ?, ?, ?, ?, ?)
+                ON CONFLICT (run_id, payment_id, event_type) DO NOTHING
                 """, event.eventId(), event.runId().value(), event.paymentId().value(), event.type().name(),
                 event.payload(), Timestamp.from(event.createdAt()));
+        if (inserted == 0) {
+            return false;
+        }
         jdbc.update("""
                 INSERT INTO webhook_deliveries (event_id, status, due_at)
                 VALUES (?, 'PENDING', ?)
                 """, event.eventId(), Timestamp.from(event.createdAt()));
+        return true;
     }
 
     public Optional<ClaimedDelivery> claimDue() {
@@ -102,6 +107,13 @@ public class JdbcWebhookStore {
                 SELECT event_id, run_id, payment_id, event_type, payload, created_at
                 FROM webhook_events WHERE event_id = ?
                 """, JdbcWebhookStore::readEvent, eventId).stream().findFirst();
+    }
+
+    public Optional<WebhookEvent> findEvent(TestRunId runId, PaymentId paymentId, WebhookEventType type) {
+        return jdbc.query("""
+                SELECT event_id, run_id, payment_id, event_type, payload, created_at
+                FROM webhook_events WHERE run_id = ? AND payment_id = ? AND event_type = ?
+                """, JdbcWebhookStore::readEvent, runId.value(), paymentId.value(), type.name()).stream().findFirst();
     }
 
     private static ClaimedDelivery readClaim(ResultSet rs, int rowNum) throws SQLException {

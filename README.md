@@ -135,6 +135,10 @@ a literal `.`, and the exact raw request body. The instance secret must be suppl
 `paylab.webhook.signing-secret` (for example, environment variable
 `PAYLAB_WEBHOOK_SIGNING_SECRET`); there is no default secret.
 
+Creating a payment for an `ASYNC_SUCCESS` run advances provider truth from `CREATED` through
+`PROCESSING` to `SUCCEEDED`, then durably schedules the signed callback. The payment response
+therefore reports `SUCCEEDED`; callback HTTP delivery remains the webhook worker's responsibility.
+
 ## Documentation
 
 - [`docs/invariants.md`](docs/invariants.md) — payment-safety rules PayLab evaluates
