@@ -45,6 +45,9 @@ class PaymentHttpTests {
     private static final String VALID_BODY = """
             {"amountMinor":10000,"currency":"ETB","merchantReference":"order-123"}
             """;
+    private static final String DIFFERENT_BODY = """
+            {"amountMinor":12500,"currency":"ETB","merchantReference":"order-456"}
+            """;
 
     static {
         POSTGRES.start();
@@ -361,6 +364,184 @@ class PaymentHttpTests {
         assertEquals("INCONCLUSIVE", evaluation.get("verdict").asText());
         assertEquals("INCONCLUSIVE", evaluation.get("assertions").get(0).get("verdict").asText());
         assertEquals(1, runEventCount("PAYMENT_REQUEST_RESOLVED"));
+    }
+
+    @Test
+    void keyReuseDifferentPayloadDistinctKeyCreatesDistinctPaymentAndPasses() throws Exception {
+        runId = createKeyReuseDifferentPayloadRun();
+
+        JsonNode first = JSON.readTree(post("intent-key-1", VALID_BODY).body());
+        JsonNode second = JSON.readTree(post("intent-key-2", DIFFERENT_BODY).body());
+
+        assertEquals("SUCCEEDED", first.get("status").asText());
+        assertEquals("SUCCEEDED", second.get("status").asText());
+        assertFalse(first.get("paymentId").asText().equals(second.get("paymentId").asText()));
+        assertEquals(2L, count("provider_payments"));
+        assertEquals(2, runEventCount("PAYMENT_COMMITTED"));
+        assertEquals(2, runEventCount("PAYMENT_REQUEST_RESOLVED"));
+        assertEquals(0L, count("webhook_events"));
+        assertEquals(0L, count("webhook_deliveries"));
+
+        JsonNode events = getEvents();
+        int beforeEvaluation = events.size();
+        JsonNode evaluation = conformance();
+        JsonNode assertion = evaluation.get("assertions").get(0);
+        assertEquals("KEY_REUSE_DIFFERENT_PAYLOAD", evaluation.get("scenario").asText());
+        assertEquals("PASS", evaluation.get("verdict").asText());
+        assertEquals("IDEMPOTENCY_KEY_SCOPE", assertion.get("assertionId").asText());
+        assertEquals("INV-03", assertion.get("invariantId").asText());
+        assertEquals("PASS", assertion.get("verdict").asText());
+        assertEvidence(assertion.get("evidenceEventIds"),
+                events.get(1).get("eventId").asLong(), events.get(2).get("eventId").asLong(),
+                events.get(3).get("eventId").asLong(), events.get(4).get("eventId").asLong(),
+                events.get(5).get("eventId").asLong(), events.get(6).get("eventId").asLong());
+        assertEquals(beforeEvaluation, getEvents().size());
+    }
+
+    @Test
+    void keyReuseDifferentPayloadSameKeyIsRejectedAndFailsConformance() throws Exception {
+        runId = createKeyReuseDifferentPayloadRun();
+        JsonNode original = JSON.readTree(post("reused-intent-key", VALID_BODY).body());
+
+        HttpResponse<String> conflict = post("reused-intent-key", DIFFERENT_BODY);
+
+        assertEquals(409, conflict.statusCode());
+        assertEquals("IDEMPOTENCY_CONFLICT", JSON.readTree(conflict.body()).get("code").asText());
+        assertEquals(1L, count("provider_payments"));
+        assertEquals(1, runEventCount("PAYMENT_COMMITTED"));
+        assertEquals(1, runEventCount("PAYMENT_REQUEST_RESOLVED"));
+        JsonNode persisted = JSON.readTree(get(original.get("paymentId").asText()).body());
+        assertEquals("SUCCEEDED", persisted.get("status").asText());
+        assertEquals(10000, persisted.get("amountMinor").asLong());
+        assertEquals("order-123", persisted.get("merchantReference").asText());
+
+        JsonNode events = getEvents();
+        JsonNode evaluation = conformance();
+        JsonNode assertion = evaluation.get("assertions").get(0);
+        assertEquals("FAIL", evaluation.get("verdict").asText());
+        assertEquals("IDEMPOTENCY_KEY_SCOPE", assertion.get("assertionId").asText());
+        assertEquals("INV-03", assertion.get("invariantId").asText());
+        assertEquals("FAIL", assertion.get("verdict").asText());
+        assertEvidence(assertion.get("evidenceEventIds"),
+                events.get(1).get("eventId").asLong(), events.get(2).get("eventId").asLong(),
+                events.get(3).get("eventId").asLong(), events.get(4).get("eventId").asLong());
+    }
+
+    @Test
+    void keyReuseDifferentPayloadUnsafeReuseTakesPrecedenceOverSafeIntent() throws Exception {
+        runId = createKeyReuseDifferentPayloadRun();
+        assertEquals(200, post("original-key", VALID_BODY).statusCode());
+        assertEquals(200, post("safe-key", DIFFERENT_BODY).statusCode());
+        assertEquals(409, post("original-key", """
+                {"amountMinor":15000,"currency":"ETB","merchantReference":"order-789"}
+                """).statusCode());
+
+        JsonNode events = getEvents();
+        JsonNode assertion = conformance().get("assertions").get(0);
+        assertEquals("FAIL", assertion.get("verdict").asText());
+        assertEvidence(assertion.get("evidenceEventIds"),
+                events.get(1).get("eventId").asLong(), events.get(2).get("eventId").asLong(),
+                events.get(3).get("eventId").asLong(), events.get(7).get("eventId").asLong());
+    }
+
+    @Test
+    void keyReuseDifferentPayloadWithoutSecondIntentIsInconclusive() throws Exception {
+        runId = createKeyReuseDifferentPayloadRun();
+        assertEquals(200, post("only-intent-key", VALID_BODY).statusCode());
+
+        JsonNode events = getEvents();
+        JsonNode assertion = conformance().get("assertions").get(0);
+        assertEquals("INCONCLUSIVE", assertion.get("verdict").asText());
+        assertEvidence(assertion.get("evidenceEventIds"),
+                events.get(1).get("eventId").asLong(), events.get(2).get("eventId").asLong(),
+                events.get(3).get("eventId").asLong());
+    }
+
+    @Test
+    void keyReuseDifferentPayloadUnresolvedSecondIntentIsInconclusive() throws Exception {
+        runId = createKeyReuseDifferentPayloadRun();
+        assertEquals(200, post("original-key", VALID_BODY).statusCode());
+        String fingerprint = new PaymentIntent(new Money(12500, "ETB"),
+                new MerchantReference("order-456")).fingerprint();
+        appendObserved("distinct-key", fingerprint);
+
+        JsonNode events = getEvents();
+        JsonNode assertion = conformance().get("assertions").get(0);
+        assertEquals("INCONCLUSIVE", assertion.get("verdict").asText());
+        assertEvidence(assertion.get("evidenceEventIds"),
+                events.get(1).get("eventId").asLong(), events.get(2).get("eventId").asLong(),
+                events.get(3).get("eventId").asLong(), events.get(4).get("eventId").asLong());
+    }
+
+    @Test
+    void keyReuseDifferentPayloadOverlappingObservationsAreInconclusive() throws Exception {
+        runId = createKeyReuseDifferentPayloadRun();
+        assertEquals(200, post("original-key", VALID_BODY).statusCode());
+        String fingerprint = new PaymentIntent(new Money(12500, "ETB"),
+                new MerchantReference("order-456")).fingerprint();
+        String fixturePaymentId = insertSucceededPayment("fixture-key", fingerprint, 12500, "order-456");
+        appendObserved("distinct-key", fingerprint);
+        appendObserved("distinct-key", fingerprint);
+        appendResolved("distinct-key", fingerprint, fixturePaymentId);
+
+        JsonNode events = getEvents();
+        JsonNode assertion = conformance().get("assertions").get(0);
+        assertEquals("INCONCLUSIVE", assertion.get("verdict").asText());
+        assertTrue(assertion.get("explanation").asText().contains("Multiple equivalent distinct-intent"));
+        assertEvidence(assertion.get("evidenceEventIds"),
+                events.get(1).get("eventId").asLong(), events.get(2).get("eventId").asLong(),
+                events.get(3).get("eventId").asLong(), events.get(4).get("eventId").asLong(),
+                events.get(5).get("eventId").asLong(), events.get(6).get("eventId").asLong());
+    }
+
+    @Test
+    void keyReuseDifferentPayloadDistinctIntentCannotResolveOriginalPayment() throws Exception {
+        runId = createKeyReuseDifferentPayloadRun();
+        JsonNode original = JSON.readTree(post("original-key", VALID_BODY).body());
+        String fingerprint = new PaymentIntent(new Money(12500, "ETB"),
+                new MerchantReference("order-456")).fingerprint();
+        appendObserved("distinct-key", fingerprint);
+        appendResolved("distinct-key", fingerprint, original.get("paymentId").asText());
+
+        JsonNode events = getEvents();
+        JsonNode assertion = conformance().get("assertions").get(0);
+        assertEquals("FAIL", assertion.get("verdict").asText());
+        assertTrue(assertion.get("explanation").asText().contains("collapsed"));
+        assertEvidence(assertion.get("evidenceEventIds"),
+                events.get(1).get("eventId").asLong(), events.get(2).get("eventId").asLong(),
+                events.get(3).get("eventId").asLong(), events.get(4).get("eventId").asLong(),
+                events.get(5).get("eventId").asLong());
+    }
+
+    @Test
+    void keyReuseDifferentPayloadLaterContradictoryResolutionOverridesSafeIntent() throws Exception {
+        runId = createKeyReuseDifferentPayloadRun();
+        JsonNode first = JSON.readTree(post("original-key", VALID_BODY).body());
+        JsonNode second = JSON.readTree(post("distinct-key", DIFFERENT_BODY).body());
+        assertEquals("SUCCEEDED", first.get("status").asText());
+        assertEquals("SUCCEEDED", second.get("status").asText());
+        assertFalse(first.get("paymentId").asText().equals(second.get("paymentId").asText()));
+
+        JsonNode safeEvents = getEvents();
+        JsonNode safeResolution = event(safeEvents, "PAYMENT_REQUEST_RESOLVED", 1);
+        assertEquals(second.get("paymentId").asText(), safeResolution.get("paymentId").asText());
+        appendResolved("distinct-key", safeResolution.get("requestFingerprint").asText(),
+                first.get("paymentId").asText());
+
+        JsonNode evidence = getEvents();
+        JsonNode contradictoryResolution = event(evidence, "PAYMENT_REQUEST_RESOLVED", 2);
+        JsonNode evaluation = conformance();
+        JsonNode assertion = evaluation.get("assertions").get(0);
+        assertEquals("KEY_REUSE_DIFFERENT_PAYLOAD", evaluation.get("scenario").asText());
+        assertEquals("FAIL", evaluation.get("verdict").asText());
+        assertEquals("IDEMPOTENCY_KEY_SCOPE", assertion.get("assertionId").asText());
+        assertEquals("INV-03", assertion.get("invariantId").asText());
+        assertEquals("FAIL", assertion.get("verdict").asText());
+        assertEquals(first.get("paymentId").asText(), contradictoryResolution.get("paymentId").asText());
+        assertEvidence(assertion.get("evidenceEventIds"),
+                evidence.get(1).get("eventId").asLong(), evidence.get(2).get("eventId").asLong(),
+                evidence.get(3).get("eventId").asLong(), evidence.get(4).get("eventId").asLong(),
+                evidence.get(5).get("eventId").asLong(), evidence.get(7).get("eventId").asLong());
     }
 
     @Test
@@ -719,6 +900,15 @@ class PaymentHttpTests {
         assertEquals(400, postRun("""
                 {"scenario":"SAME_KEY_RETRY","responseDelayMillis":10}
                 """).statusCode());
+        assertEquals(201, postRun("""
+                {"scenario":"KEY_REUSE_DIFFERENT_PAYLOAD"}
+                """).statusCode());
+        assertEquals(400, postRun("""
+                {"scenario":"KEY_REUSE_DIFFERENT_PAYLOAD","webhookUrl":"http://localhost/webhook"}
+                """).statusCode());
+        assertEquals(400, postRun("""
+                {"scenario":"KEY_REUSE_DIFFERENT_PAYLOAD","responseDelayMillis":10}
+                """).statusCode());
     }
 
     @Test
@@ -892,6 +1082,17 @@ class PaymentHttpTests {
         return body.get("runId").asText();
     }
 
+    private String createKeyReuseDifferentPayloadRun() throws Exception {
+        HttpResponse<String> response = postRun("""
+                {"scenario":"KEY_REUSE_DIFFERENT_PAYLOAD"}
+                """);
+        assertEquals(201, response.statusCode());
+        JsonNode body = JSON.readTree(response.body());
+        assertTrue(body.get("webhookUrl").isNull());
+        assertTrue(body.get("responseDelayMillis").isNull());
+        return body.get("runId").asText();
+    }
+
     private JsonNode getEvents() throws Exception {
         HttpRequest request = HttpRequest.newBuilder(
                 URI.create("http://localhost:" + port + "/test-runs/" + runId + "/events")).GET().build();
@@ -921,6 +1122,18 @@ class PaymentHttpTests {
                     (run_id, event_type, idempotency_key, request_fingerprint, payment_id)
                 VALUES (?, 'PAYMENT_REQUEST_RESOLVED', ?, ?, ?)
                 """, UUID.fromString(runId), key, fingerprint, paymentId);
+    }
+
+    private String insertSucceededPayment(String key, String fingerprint, long amountMinor,
+            String merchantReference) {
+        String paymentId = UUID.randomUUID().toString();
+        jdbc.update("""
+                INSERT INTO provider_payments
+                    (payment_id, run_id, idempotency_key, request_fingerprint, amount_minor_units,
+                     currency, merchant_reference, status)
+                VALUES (?, ?, ?, ?, ?, 'ETB', ?, 'SUCCEEDED')
+                """, paymentId, UUID.fromString(runId), key, fingerprint, amountMinor, merchantReference);
+        return paymentId;
     }
 
     private long count(String table) {

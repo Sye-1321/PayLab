@@ -19,6 +19,7 @@ public class PaymentRequestOrchestrator {
     private final AsyncSuccessScenarioExecutor asyncSuccess;
     private final DuplicateWebhookScenarioExecutor duplicateWebhook;
     private final SameKeyRetryScenarioExecutor sameKeyRetry;
+    private final KeyReuseDifferentPayloadScenarioExecutor keyReuseDifferentPayload;
     private final TimeoutBeforeCommitScenarioExecutor timeoutBeforeCommit;
     private final TimeoutAfterCommitScenarioExecutor timeoutAfterCommit;
 
@@ -26,6 +27,7 @@ public class PaymentRequestOrchestrator {
             JdbcProviderPaymentStore payments, AsyncSuccessScenarioExecutor asyncSuccess,
             DuplicateWebhookScenarioExecutor duplicateWebhook,
             SameKeyRetryScenarioExecutor sameKeyRetry,
+            KeyReuseDifferentPayloadScenarioExecutor keyReuseDifferentPayload,
             TimeoutBeforeCommitScenarioExecutor timeoutBeforeCommit,
             TimeoutAfterCommitScenarioExecutor timeoutAfterCommit) {
         this.runs = runs;
@@ -34,6 +36,7 @@ public class PaymentRequestOrchestrator {
         this.asyncSuccess = asyncSuccess;
         this.duplicateWebhook = duplicateWebhook;
         this.sameKeyRetry = sameKeyRetry;
+        this.keyReuseDifferentPayload = keyReuseDifferentPayload;
         this.timeoutBeforeCommit = timeoutBeforeCommit;
         this.timeoutAfterCommit = timeoutAfterCommit;
     }
@@ -51,6 +54,8 @@ public class PaymentRequestOrchestrator {
             case DUPLICATE_WEBHOOK ->
                     new PaymentRequestResult(duplicateWebhook.execute(runId, creation), null);
             case SAME_KEY_RETRY -> new PaymentRequestResult(sameKeyRetry.execute(runId, creation), null);
+            case KEY_REUSE_DIFFERENT_PAYLOAD ->
+                    new PaymentRequestResult(keyReuseDifferentPayload.execute(runId, creation), null);
             case TIMEOUT_AFTER_COMMIT -> timeoutAfterCommit.execute(run, creation);
             case TIMEOUT_BEFORE_COMMIT -> throw new IllegalStateException("Scenario was already handled");
         };

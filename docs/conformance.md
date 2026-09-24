@@ -113,7 +113,8 @@ Informational assertions do not affect the scenario verdict.
 
 ## Current evaluation endpoint
 
-`GET /test-runs/{runId}/conformance` currently supports `TIMEOUT_AFTER_COMMIT` and `SAME_KEY_RETRY`.
+`GET /test-runs/{runId}/conformance` currently supports `TIMEOUT_AFTER_COMMIT`, `SAME_KEY_RETRY`, and
+`KEY_REUSE_DIFFERENT_PAYLOAD`.
 It returns the run ID, scenario and version,
 overall verdict, and an `assertions` array containing the assertion ID, invariant ID, verdict,
 explanation, and ordered persisted evidence event IDs.
@@ -123,6 +124,14 @@ authoritative `SUCCEEDED` provider state. A later equivalent same-key observatio
 the original payment produces `PASS`; an equivalent new-key observation or a same-key resolution to
 a different payment produces `FAIL`; and missing, incomplete, or different-payload retry evidence is
 `INCONCLUSIVE`. Unsafe new-key evidence takes precedence over safe replay evidence.
+
+For `KEY_REUSE_DIFFERENT_PAYLOAD`, `IDEMPOTENCY_KEY_SCOPE` (`INV-03`) requires a complete succeeded
+original operation. A later different fingerprint under the original key produces `FAIL` from the
+observation alone, regardless of the provider's expected defensive HTTP `409`. `PASS` requires a
+different fingerprint under a different key to resolve unambiguously to a distinct committed,
+authoritative `SUCCEEDED` payment. No second material intent, missing resolution or completion
+evidence, and overlapping equivalent observations are `INCONCLUSIVE`. Conflicting key reuse takes
+precedence over safe distinct-intent evidence.
 
 For `TIMEOUT_AFTER_COMMIT`, the evaluator anchors the ambiguous operation at the first payment-referencing
 `RESPONSE_DELAY_INJECTED` event, finds an earlier `PAYMENT_COMMITTED` for the same payment, and

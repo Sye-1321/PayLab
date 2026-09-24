@@ -124,7 +124,8 @@ an equivalent retry and belongs to `KEY_REUSE_DIFFERENT_PAYLOAD`.
 
 ## SCN-05 — KEY_REUSE_DIFFERENT_PAYLOAD
 
-**Purpose:** prevent one idempotency identity from representing two financial intents.
+**Purpose:** prevent one idempotency identity from representing two financial intents. This scenario
+is executable with no webhook URL or response delay.
 
 Example:
 
@@ -133,7 +134,16 @@ request 1: key=ORDER-1 amountMinor=10000 currency=ETB
 request 2: key=ORDER-1 amountMinor=50000 currency=ETB
 ```
 
-**Provider behavior:** reject the second request as an idempotency conflict without altering the original payment.
+**Provider behavior:** a materially different intent under a different key creates a distinct
+`SUCCEEDED` payment. Reusing the original key for a different intent is defensively rejected with
+HTTP `409` without altering the original payment.
+
+The `IDEMPOTENCY_KEY_SCOPE` assertion returns `PASS` only when different request fingerprints use
+different keys and resolve to distinct committed, authoritative `SUCCEEDED` payments. An observed
+different fingerprint under the original key returns `FAIL` even though the provider correctly
+rejects it: the violation is the integration's attempted idempotency-key reuse. Missing, unresolved,
+or ambiguously paired second-intent evidence is `INCONCLUSIVE`. Unsafe reuse takes precedence over
+earlier safe distinct-intent evidence.
 
 **Relevant invariant:** INV-03.
 

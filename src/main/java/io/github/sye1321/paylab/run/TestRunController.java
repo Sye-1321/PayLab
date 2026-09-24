@@ -5,6 +5,7 @@ import java.util.List;
 import java.util.UUID;
 
 import io.github.sye1321.paylab.conformance.ConformanceEvaluation;
+import io.github.sye1321.paylab.conformance.KeyReuseDifferentPayloadConformanceEvaluator;
 import io.github.sye1321.paylab.conformance.SameKeyRetryConformanceEvaluator;
 import io.github.sye1321.paylab.conformance.TimeoutAfterCommitConformanceEvaluator;
 import io.github.sye1321.paylab.conformance.UnsupportedConformanceScenarioException;
@@ -28,15 +29,18 @@ public class TestRunController {
     private final WebhookUrlValidator webhookUrls;
     private final TimeoutAfterCommitConformanceEvaluator timeoutAfterCommitConformance;
     private final SameKeyRetryConformanceEvaluator sameKeyRetryConformance;
+    private final KeyReuseDifferentPayloadConformanceEvaluator keyReuseDifferentPayloadConformance;
 
     public TestRunController(JdbcTestRunStore store, JdbcRunEventStore events, WebhookUrlValidator webhookUrls,
             TimeoutAfterCommitConformanceEvaluator timeoutAfterCommitConformance,
-            SameKeyRetryConformanceEvaluator sameKeyRetryConformance) {
+            SameKeyRetryConformanceEvaluator sameKeyRetryConformance,
+            KeyReuseDifferentPayloadConformanceEvaluator keyReuseDifferentPayloadConformance) {
         this.store = store;
         this.events = events;
         this.webhookUrls = webhookUrls;
         this.timeoutAfterCommitConformance = timeoutAfterCommitConformance;
         this.sameKeyRetryConformance = sameKeyRetryConformance;
+        this.keyReuseDifferentPayloadConformance = keyReuseDifferentPayloadConformance;
     }
 
     @PostMapping
@@ -61,9 +65,9 @@ public class TestRunController {
                 webhookUrl = null;
                 responseDelayMillis = request.responseDelayMillis();
             }
-            case SAME_KEY_RETRY -> {
+            case SAME_KEY_RETRY, KEY_REUSE_DIFFERENT_PAYLOAD -> {
                 if (request.webhookUrl() != null || request.responseDelayMillis() != null) {
-                    throw new IllegalArgumentException("Invalid SAME_KEY_RETRY configuration");
+                    throw new IllegalArgumentException("Invalid idempotency scenario configuration");
                 }
                 webhookUrl = null;
                 responseDelayMillis = null;
@@ -92,6 +96,7 @@ public class TestRunController {
         return switch (run.scenario()) {
             case TIMEOUT_AFTER_COMMIT -> timeoutAfterCommitConformance.evaluate(id);
             case SAME_KEY_RETRY -> sameKeyRetryConformance.evaluate(id);
+            case KEY_REUSE_DIFFERENT_PAYLOAD -> keyReuseDifferentPayloadConformance.evaluate(id);
             default -> throw new UnsupportedConformanceScenarioException(run.scenario());
         };
     }

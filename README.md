@@ -168,7 +168,8 @@ support it. An equivalent same-key replay or a successful lookup of the original
 `PASS`; an equivalent request under a different key establishes `FAIL`; and incomplete fault or
 recovery evidence is `INCONCLUSIVE`. Evaluation is read-only and is not final: later evidence can
 change a subsequent result because run finalization and persisted certification results are not yet
-implemented. `SAME_KEY_RETRY` also has an evidence-backed `IDEMPOTENT_REPLAY` evaluator for `INV-02`;
+implemented. `SAME_KEY_RETRY` has an evidence-backed `IDEMPOTENT_REPLAY` evaluator for `INV-02`, and
+`KEY_REUSE_DIFFERENT_PAYLOAD` has an evidence-backed `IDEMPOTENCY_KEY_SCOPE` evaluator for `INV-03`;
 other scenarios currently remain unsupported by the conformance endpoint.
 
 ## Documentation

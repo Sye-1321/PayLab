@@ -97,7 +97,8 @@ Owns:
 - verdict evaluation.
 
 The conformance endpoint explicitly dispatches `TIMEOUT_AFTER_COMMIT` to
-`AMBIGUOUS_OUTCOME_RECOVERY` (`INV-01`) and `SAME_KEY_RETRY` to `IDEMPOTENT_REPLAY` (`INV-02`). Each
+`AMBIGUOUS_OUTCOME_RECOVERY` (`INV-01`), `SAME_KEY_RETRY` to `IDEMPOTENT_REPLAY` (`INV-02`), and
+`KEY_REUSE_DIFFERENT_PAYLOAD` to `IDEMPOTENCY_KEY_SCOPE` (`INV-03`). Each
 evaluator reads the persisted event sequence and authoritative provider payment without writing
 evaluation events or results. Consequently, evaluation is deterministic for a fixed database
 snapshot, while later request evidence may change a subsequent evaluation.
