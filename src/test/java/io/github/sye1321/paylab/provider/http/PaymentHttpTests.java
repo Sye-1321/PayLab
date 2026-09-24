@@ -201,6 +201,169 @@ class PaymentHttpTests {
     }
 
     @Test
+    void sameKeyRetryResolvesOnePaymentAndPassesConformance() throws Exception {
+        runId = createSameKeyRetryRun();
+        String key = UUID.randomUUID().toString();
+
+        HttpResponse<String> first = post(key, VALID_BODY);
+        HttpResponse<String> retry = post(key, VALID_BODY);
+
+        assertEquals(200, first.statusCode());
+        assertEquals(200, retry.statusCode());
+        JsonNode firstBody = JSON.readTree(first.body());
+        JsonNode retryBody = JSON.readTree(retry.body());
+        assertEquals("SUCCEEDED", firstBody.get("status").asText());
+        assertEquals("SUCCEEDED", retryBody.get("status").asText());
+        assertEquals(firstBody.get("paymentId").asText(), retryBody.get("paymentId").asText());
+        assertEquals(1L, count("provider_payments"));
+        assertEquals(1, runEventCount("PAYMENT_COMMITTED"));
+        assertEquals(2, runEventCount("PAYMENT_REQUEST_RESOLVED"));
+        assertEquals(0L, count("webhook_events"));
+        assertEquals(0L, count("webhook_deliveries"));
+
+        JsonNode events = getEvents();
+        assertEquals(6, events.size());
+        assertEquals("RUN_STARTED", events.get(0).get("eventType").asText());
+        assertEquals("MERCHANT_REQUEST_OBSERVED", events.get(1).get("eventType").asText());
+        assertEquals("PAYMENT_REQUEST_RESOLVED", events.get(2).get("eventType").asText());
+        assertEquals("PAYMENT_COMMITTED", events.get(3).get("eventType").asText());
+        assertEquals("MERCHANT_REQUEST_OBSERVED", events.get(4).get("eventType").asText());
+        assertEquals("PAYMENT_REQUEST_RESOLVED", events.get(5).get("eventType").asText());
+        assertEquals(key, events.get(2).get("idempotencyKey").asText());
+        assertEquals(key, events.get(5).get("idempotencyKey").asText());
+        assertEquals(events.get(2).get("requestFingerprint").asText(),
+                events.get(5).get("requestFingerprint").asText());
+        assertEquals(firstBody.get("paymentId").asText(), events.get(2).get("paymentId").asText());
+        assertEquals(events.get(2).get("paymentId").asText(), events.get(5).get("paymentId").asText());
+        assertFalse(events.get(2).get("eventId").asLong() == events.get(5).get("eventId").asLong());
+
+        int beforeEvaluation = events.size();
+        JsonNode evaluation = conformance();
+        assertEquals("SAME_KEY_RETRY", evaluation.get("scenario").asText());
+        assertEquals("PASS", evaluation.get("verdict").asText());
+        JsonNode assertion = evaluation.get("assertions").get(0);
+        assertEquals("IDEMPOTENT_REPLAY", assertion.get("assertionId").asText());
+        assertEquals("INV-02", assertion.get("invariantId").asText());
+        assertEquals("PASS", assertion.get("verdict").asText());
+        assertEvidence(assertion.get("evidenceEventIds"),
+                events.get(1).get("eventId").asLong(), events.get(2).get("eventId").asLong(),
+                events.get(3).get("eventId").asLong(), events.get(4).get("eventId").asLong(),
+                events.get(5).get("eventId").asLong());
+        assertEquals(beforeEvaluation, getEvents().size());
+    }
+
+    @Test
+    void sameKeyRetryEquivalentNewKeyTakesFailurePrecedence() throws Exception {
+        runId = createSameKeyRetryRun();
+        assertEquals(200, post("original-key", VALID_BODY).statusCode());
+        assertEquals(200, post("original-key", VALID_BODY).statusCode());
+        assertEquals(200, post("unsafe-key", VALID_BODY).statusCode());
+
+        JsonNode events = getEvents();
+        JsonNode originalObserved = event(events, "MERCHANT_REQUEST_OBSERVED", 0);
+        JsonNode originalResolved = event(events, "PAYMENT_REQUEST_RESOLVED", 0);
+        JsonNode committed = event(events, "PAYMENT_COMMITTED", 0);
+        JsonNode unsafeObserved = event(events, "MERCHANT_REQUEST_OBSERVED", 2);
+        JsonNode evaluation = conformance();
+        JsonNode assertion = evaluation.get("assertions").get(0);
+
+        assertEquals("FAIL", evaluation.get("verdict").asText());
+        assertEquals("IDEMPOTENT_REPLAY", assertion.get("assertionId").asText());
+        assertEquals("INV-02", assertion.get("invariantId").asText());
+        assertEquals("FAIL", assertion.get("verdict").asText());
+        assertEquals("unsafe-key", unsafeObserved.get("idempotencyKey").asText());
+        assertEvidence(assertion.get("evidenceEventIds"),
+                originalObserved.get("eventId").asLong(), originalResolved.get("eventId").asLong(),
+                committed.get("eventId").asLong(), unsafeObserved.get("eventId").asLong());
+    }
+
+    @Test
+    void sameKeyRetryOverlappingEquivalentObservationsAreInconclusive() throws Exception {
+        runId = createSameKeyRetryRun();
+        String key = "ambiguous-key";
+        JsonNode original = JSON.readTree(post(key, VALID_BODY).body());
+        JsonNode events = getEvents();
+        String fingerprint = event(events, "PAYMENT_REQUEST_RESOLVED", 0).get("requestFingerprint").asText();
+
+        appendObserved(key, fingerprint);
+        appendObserved(key, fingerprint);
+        appendResolved(key, fingerprint, original.get("paymentId").asText());
+
+        JsonNode evidence = getEvents();
+        JsonNode assertion = conformance().get("assertions").get(0);
+        assertEquals("INCONCLUSIVE", assertion.get("verdict").asText());
+        assertTrue(assertion.get("explanation").asText().contains("Multiple equivalent retry observations"));
+        assertEvidence(assertion.get("evidenceEventIds"),
+                evidence.get(1).get("eventId").asLong(), evidence.get(2).get("eventId").asLong(),
+                evidence.get(3).get("eventId").asLong(), evidence.get(4).get("eventId").asLong(),
+                evidence.get(5).get("eventId").asLong(), evidence.get(6).get("eventId").asLong());
+    }
+
+    @Test
+    void sameKeyRetryLaterContradictoryResolutionOverridesSafeReplay() throws Exception {
+        runId = createSameKeyRetryRun();
+        String key = "contradictory-key";
+        JsonNode original = JSON.readTree(post(key, VALID_BODY).body());
+        assertEquals(200, post(key, VALID_BODY).statusCode());
+        JsonNode events = getEvents();
+        String fingerprint = event(events, "PAYMENT_REQUEST_RESOLVED", 0).get("requestFingerprint").asText();
+        String contradictoryPaymentId = UUID.randomUUID().toString();
+
+        appendObserved(key, fingerprint);
+        jdbc.update("""
+                INSERT INTO provider_payments
+                    (payment_id, run_id, idempotency_key, request_fingerprint, amount_minor_units,
+                     currency, merchant_reference, status)
+                VALUES (?, ?, ?, ?, 10000, 'ETB', 'contradictory-fixture', 'SUCCEEDED')
+                """, contradictoryPaymentId, UUID.fromString(runId), "contradictory-fixture-key", fingerprint);
+        appendResolved(key, fingerprint, contradictoryPaymentId);
+
+        JsonNode evidence = getEvents();
+        JsonNode evaluation = conformance();
+        JsonNode assertion = evaluation.get("assertions").get(0);
+        assertEquals("FAIL", evaluation.get("verdict").asText());
+        assertEquals("IDEMPOTENT_REPLAY", assertion.get("assertionId").asText());
+        assertEquals("INV-02", assertion.get("invariantId").asText());
+        assertEquals("FAIL", assertion.get("verdict").asText());
+        assertTrue(assertion.get("explanation").asText().contains("different logical provider payments"));
+        assertEvidence(assertion.get("evidenceEventIds"),
+                evidence.get(1).get("eventId").asLong(), evidence.get(2).get("eventId").asLong(),
+                evidence.get(3).get("eventId").asLong(), evidence.get(7).get("eventId").asLong());
+        assertEquals(original.get("paymentId").asText(), evidence.get(2).get("paymentId").asText());
+    }
+
+    @Test
+    void sameKeyRetryWithoutRetryIsInconclusive() throws Exception {
+        runId = createSameKeyRetryRun();
+        assertEquals(200, post("only-key", VALID_BODY).statusCode());
+
+        JsonNode events = getEvents();
+        JsonNode evaluation = conformance();
+        JsonNode assertion = evaluation.get("assertions").get(0);
+
+        assertEquals("INCONCLUSIVE", evaluation.get("verdict").asText());
+        assertEquals("INCONCLUSIVE", assertion.get("verdict").asText());
+        assertEvidence(assertion.get("evidenceEventIds"),
+                events.get(1).get("eventId").asLong(), events.get(2).get("eventId").asLong(),
+                events.get(3).get("eventId").asLong());
+    }
+
+    @Test
+    void sameKeyRetryDifferentPayloadIsNotEquivalentReplay() throws Exception {
+        runId = createSameKeyRetryRun();
+        String key = "reused-key";
+        assertEquals(200, post(key, VALID_BODY).statusCode());
+        assertEquals(409, post(key, """
+                {"amountMinor":10001,"currency":"ETB","merchantReference":"order-123"}
+                """).statusCode());
+
+        JsonNode evaluation = conformance();
+        assertEquals("INCONCLUSIVE", evaluation.get("verdict").asText());
+        assertEquals("INCONCLUSIVE", evaluation.get("assertions").get(0).get("verdict").asText());
+        assertEquals(1, runEventCount("PAYMENT_REQUEST_RESOLVED"));
+    }
+
+    @Test
     void conflictingReplayReturns409AndKeepsOriginal() throws Exception {
         String key = UUID.randomUUID().toString();
         HttpResponse<String> first = post(key, VALID_BODY);
@@ -515,6 +678,10 @@ class PaymentHttpTests {
 
     @Test
     void runConfigurationRejectsContradictoryScenarioParameters() throws Exception {
+        HttpResponse<String> sameKey = postRun("""
+                {"scenario":"SAME_KEY_RETRY"}
+                """);
+        assertEquals(201, sameKey.statusCode());
         assertEquals(400, postRun("""
                 {"scenario":"ASYNC_SUCCESS"}
                 """).statusCode());
@@ -546,6 +713,22 @@ class PaymentHttpTests {
                 {"scenario":"DUPLICATE_WEBHOOK","webhookUrl":"http://localhost/webhook",
                  "responseDelayMillis":10}
                 """).statusCode());
+        assertEquals(400, postRun("""
+                {"scenario":"SAME_KEY_RETRY","webhookUrl":"http://localhost/webhook"}
+                """).statusCode());
+        assertEquals(400, postRun("""
+                {"scenario":"SAME_KEY_RETRY","responseDelayMillis":10}
+                """).statusCode());
+    }
+
+    @Test
+    void unsupportedConformanceScenarioStillReturns400() throws Exception {
+        HttpRequest request = HttpRequest.newBuilder(
+                URI.create("http://localhost:" + port + "/test-runs/" + runId + "/conformance")).GET().build();
+        HttpResponse<String> response = HTTP.send(request, HttpResponse.BodyHandlers.ofString());
+
+        assertEquals(400, response.statusCode());
+        assertEquals("UNSUPPORTED_CONFORMANCE_SCENARIO", JSON.readTree(response.body()).get("code").asText());
     }
 
     @Test
@@ -698,6 +881,17 @@ class PaymentHttpTests {
         return body.get("runId").asText();
     }
 
+    private String createSameKeyRetryRun() throws Exception {
+        HttpResponse<String> response = postRun("""
+                {"scenario":"SAME_KEY_RETRY"}
+                """);
+        assertEquals(201, response.statusCode());
+        JsonNode body = JSON.readTree(response.body());
+        assertTrue(body.get("webhookUrl").isNull());
+        assertTrue(body.get("responseDelayMillis").isNull());
+        return body.get("runId").asText();
+    }
+
     private JsonNode getEvents() throws Exception {
         HttpRequest request = HttpRequest.newBuilder(
                 URI.create("http://localhost:" + port + "/test-runs/" + runId + "/events")).GET().build();
@@ -712,6 +906,21 @@ class PaymentHttpTests {
         HttpResponse<String> response = HTTP.send(request, HttpResponse.BodyHandlers.ofString());
         assertEquals(200, response.statusCode());
         return JSON.readTree(response.body());
+    }
+
+    private void appendObserved(String key, String fingerprint) {
+        jdbc.update("""
+                INSERT INTO run_events (run_id, event_type, idempotency_key, request_fingerprint)
+                VALUES (?, 'MERCHANT_REQUEST_OBSERVED', ?, ?)
+                """, UUID.fromString(runId), key, fingerprint);
+    }
+
+    private void appendResolved(String key, String fingerprint, String paymentId) {
+        jdbc.update("""
+                INSERT INTO run_events
+                    (run_id, event_type, idempotency_key, request_fingerprint, payment_id)
+                VALUES (?, 'PAYMENT_REQUEST_RESOLVED', ?, ?, ?)
+                """, UUID.fromString(runId), key, fingerprint, paymentId);
     }
 
     private long count(String table) {

@@ -5,7 +5,9 @@ import java.util.List;
 import java.util.UUID;
 
 import io.github.sye1321.paylab.conformance.ConformanceEvaluation;
+import io.github.sye1321.paylab.conformance.SameKeyRetryConformanceEvaluator;
 import io.github.sye1321.paylab.conformance.TimeoutAfterCommitConformanceEvaluator;
+import io.github.sye1321.paylab.conformance.UnsupportedConformanceScenarioException;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.NotNull;
 import org.springframework.http.HttpStatus;
@@ -24,14 +26,17 @@ public class TestRunController {
     private final JdbcTestRunStore store;
     private final JdbcRunEventStore events;
     private final WebhookUrlValidator webhookUrls;
-    private final TimeoutAfterCommitConformanceEvaluator conformance;
+    private final TimeoutAfterCommitConformanceEvaluator timeoutAfterCommitConformance;
+    private final SameKeyRetryConformanceEvaluator sameKeyRetryConformance;
 
     public TestRunController(JdbcTestRunStore store, JdbcRunEventStore events, WebhookUrlValidator webhookUrls,
-            TimeoutAfterCommitConformanceEvaluator conformance) {
+            TimeoutAfterCommitConformanceEvaluator timeoutAfterCommitConformance,
+            SameKeyRetryConformanceEvaluator sameKeyRetryConformance) {
         this.store = store;
         this.events = events;
         this.webhookUrls = webhookUrls;
-        this.conformance = conformance;
+        this.timeoutAfterCommitConformance = timeoutAfterCommitConformance;
+        this.sameKeyRetryConformance = sameKeyRetryConformance;
     }
 
     @PostMapping
@@ -56,6 +61,13 @@ public class TestRunController {
                 webhookUrl = null;
                 responseDelayMillis = request.responseDelayMillis();
             }
+            case SAME_KEY_RETRY -> {
+                if (request.webhookUrl() != null || request.responseDelayMillis() != null) {
+                    throw new IllegalArgumentException("Invalid SAME_KEY_RETRY configuration");
+                }
+                webhookUrl = null;
+                responseDelayMillis = null;
+            }
             default -> throw new IllegalArgumentException("Unsupported scenario");
         }
         return TestRunResponse.from(store.create(request.scenario(), webhookUrl, responseDelayMillis));
@@ -75,7 +87,13 @@ public class TestRunController {
 
     @GetMapping("/{runId}/conformance")
     public ConformanceEvaluation conformance(@PathVariable UUID runId) {
-        return conformance.evaluate(new TestRunId(runId));
+        TestRunId id = new TestRunId(runId);
+        TestRun run = store.require(id);
+        return switch (run.scenario()) {
+            case TIMEOUT_AFTER_COMMIT -> timeoutAfterCommitConformance.evaluate(id);
+            case SAME_KEY_RETRY -> sameKeyRetryConformance.evaluate(id);
+            default -> throw new UnsupportedConformanceScenarioException(run.scenario());
+        };
     }
 
     public record CreateTestRunRequest(@NotNull ScenarioId scenario, String webhookUrl, Integer responseDelayMillis) {

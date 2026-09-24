@@ -113,12 +113,18 @@ Informational assertions do not affect the scenario verdict.
 
 ## Current evaluation endpoint
 
-`GET /test-runs/{runId}/conformance` currently supports only `TIMEOUT_AFTER_COMMIT`. It evaluates
-the `AMBIGUOUS_OUTCOME_RECOVERY` assertion for `INV-01` and returns the run ID, scenario and version,
+`GET /test-runs/{runId}/conformance` currently supports `TIMEOUT_AFTER_COMMIT` and `SAME_KEY_RETRY`.
+It returns the run ID, scenario and version,
 overall verdict, and an `assertions` array containing the assertion ID, invariant ID, verdict,
 explanation, and ordered persisted evidence event IDs.
 
-The evaluator anchors the ambiguous operation at the first payment-referencing
+For `SAME_KEY_RETRY`, `IDEMPOTENT_REPLAY` (`INV-02`) requires a complete original operation and
+authoritative `SUCCEEDED` provider state. A later equivalent same-key observation and resolution to
+the original payment produces `PASS`; an equivalent new-key observation or a same-key resolution to
+a different payment produces `FAIL`; and missing, incomplete, or different-payload retry evidence is
+`INCONCLUSIVE`. Unsafe new-key evidence takes precedence over safe replay evidence.
+
+For `TIMEOUT_AFTER_COMMIT`, the evaluator anchors the ambiguous operation at the first payment-referencing
 `RESPONSE_DELAY_INJECTED` event, finds an earlier `PAYMENT_COMMITTED` for the same payment, and
 checks the authoritative payment is `SUCCEEDED`. After that anchor:
 

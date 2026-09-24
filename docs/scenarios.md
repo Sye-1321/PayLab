@@ -105,11 +105,18 @@ over safe-recovery evidence.
 
 ## SCN-04 — SAME_KEY_RETRY
 
-**Purpose:** verify normal idempotent replay.
+**Purpose:** verify normal sequential idempotent replay. This scenario is executable with no webhook
+URL or response delay.
 
-**Provider behavior:** accept repeated equivalent requests with the same idempotency key and resolve them to the same logical payment.
+**Provider behavior:** the first valid request creates one logical payment and progresses it to
+`SUCCEEDED`. A later equivalent request using the same idempotency key resolves that existing payment
+without another commit, webhook, or delay.
 
-**Assertions:** one logical payment exists and replay responses identify that operation.
+The `IDEMPOTENT_REPLAY` assertion returns `PASS` when persisted request-resolution evidence proves
+the sequential same-key retry resolved the original payment. An equivalent request under a different
+key is unsafe and returns `FAIL`, with failure taking precedence over safe replay evidence. Missing or
+incomplete retry evidence is `INCONCLUSIVE`; same-key reuse with a different payload is not treated as
+an equivalent retry and belongs to `KEY_REUSE_DIFFERENT_PAYLOAD`.
 
 **Relevant invariant:** INV-02.
 

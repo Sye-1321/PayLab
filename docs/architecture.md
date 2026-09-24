@@ -96,11 +96,11 @@ Owns:
 - invariant references;
 - verdict evaluation.
 
-The first concrete evaluator covers only `TIMEOUT_AFTER_COMMIT` assertion
-`AMBIGUOUS_OUTCOME_RECOVERY` (`INV-01`). It reads the persisted event sequence and authoritative
-provider payment without writing evaluation events or results. Consequently, evaluation is
-deterministic for a fixed database snapshot, while a later request or successful status lookup may
-change a subsequent evaluation.
+The conformance endpoint explicitly dispatches `TIMEOUT_AFTER_COMMIT` to
+`AMBIGUOUS_OUTCOME_RECOVERY` (`INV-01`) and `SAME_KEY_RETRY` to `IDEMPOTENT_REPLAY` (`INV-02`). Each
+evaluator reads the persisted event sequence and authoritative provider payment without writing
+evaluation events or results. Consequently, evaluation is deterministic for a fixed database
+snapshot, while later request evidence may change a subsequent evaluation.
 
 ### Reporting
 
