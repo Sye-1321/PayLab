@@ -43,6 +43,12 @@ public class SuccessfulPaymentWebhookScheduler {
 
     @Transactional
     public WebhookEvent schedule(TestRunId runId, PaymentId paymentId, int targetDeliveryCount) {
+        return schedule(runId, paymentId, targetDeliveryCount, 0);
+    }
+
+    @Transactional
+    public WebhookEvent schedule(TestRunId runId, PaymentId paymentId, int targetDeliveryCount,
+            int maxFailureRetries) {
         TestRun run = runs.require(runId);
         if (run.webhookUrl() == null || run.webhookUrl().isBlank()) {
             throw new WebhookSchedulingException("Test run has no webhook URL");
@@ -67,7 +73,7 @@ public class SuccessfulPaymentWebhookScheduler {
         }
         WebhookEvent event = new WebhookEvent(eventId, runId, paymentId,
                 WebhookEventType.PAYMENT_SUCCEEDED, rawPayload, createdAt);
-        if (webhooks.insertEventAndDelivery(event, targetDeliveryCount)) {
+        if (webhooks.insertEventAndDelivery(event, targetDeliveryCount, maxFailureRetries)) {
             runEvents.appendWebhookScheduled(runId, eventId);
             return event;
         }

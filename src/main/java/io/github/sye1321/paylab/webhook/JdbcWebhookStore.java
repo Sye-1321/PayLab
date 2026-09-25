@@ -19,6 +19,8 @@ import org.springframework.transaction.support.TransactionTemplate;
 @Repository
 public class JdbcWebhookStore {
 
+    private static final int FAILURE_RETRY_DELAY_MILLIS = 100;
+
     private final JdbcTemplate jdbc;
     private final JdbcRunEventStore runEvents;
     private final TransactionTemplate transaction;
@@ -38,6 +40,10 @@ public class JdbcWebhookStore {
     }
 
     public boolean insertEventAndDelivery(WebhookEvent event, int targetDeliveryCount) {
+        return insertEventAndDelivery(event, targetDeliveryCount, 0);
+    }
+
+    public boolean insertEventAndDelivery(WebhookEvent event, int targetDeliveryCount, int maxFailureRetries) {
         int inserted = jdbc.update("""
                 INSERT INTO webhook_events (event_id, run_id, payment_id, event_type, payload, created_at)
                 VALUES (?, ?, ?, ?, ?, ?)
@@ -48,9 +54,10 @@ public class JdbcWebhookStore {
             return false;
         }
         jdbc.update("""
-                INSERT INTO webhook_deliveries (event_id, status, due_at, target_delivery_count)
-                VALUES (?, 'PENDING', ?, ?)
-                """, event.eventId(), Timestamp.from(event.createdAt()), targetDeliveryCount);
+                INSERT INTO webhook_deliveries
+                    (event_id, status, due_at, target_delivery_count, max_failure_retries)
+                VALUES (?, 'PENDING', ?, ?, ?)
+                """, event.eventId(), Timestamp.from(event.createdAt()), targetDeliveryCount, maxFailureRetries);
         return true;
     }
 
@@ -84,19 +91,29 @@ public class JdbcWebhookStore {
             int updated = jdbc.update("""
                     UPDATE webhook_deliveries
                     SET status = CASE
-                            WHEN ? = 'DELIVERED' AND attempt_count + 1 < target_delivery_count THEN 'PENDING'
+                            WHEN ? = 'DELIVERED'
+                                AND acknowledged_delivery_count + 1 < target_delivery_count THEN 'PENDING'
                             WHEN ? = 'DELIVERED' THEN 'DELIVERED'
+                            WHEN failure_count < max_failure_retries THEN 'PENDING'
                             ELSE 'FAILED'
                         END,
                         attempt_count = attempt_count + 1,
+                        acknowledged_delivery_count = acknowledged_delivery_count
+                            + CASE WHEN ? = 'DELIVERED' THEN 1 ELSE 0 END,
+                        failure_count = failure_count
+                            + CASE WHEN ? <> 'DELIVERED' THEN 1 ELSE 0 END,
                         due_at = CASE
-                            WHEN ? = 'DELIVERED' AND attempt_count + 1 < target_delivery_count THEN now()
+                            WHEN ? = 'DELIVERED'
+                                AND acknowledged_delivery_count + 1 < target_delivery_count THEN now()
+                            WHEN ? <> 'DELIVERED' AND failure_count < max_failure_retries
+                                THEN now() + (? * interval '1 millisecond')
                             ELSE due_at
                         END,
                         last_http_status = ?,
                         claim_token = NULL, claim_until = NULL
                     WHERE event_id = ? AND status = 'IN_PROGRESS' AND claim_token = ?
-                    """, outcome.name(), outcome.name(), outcome.name(), httpStatus,
+                    """, outcome.name(), outcome.name(), outcome.name(), outcome.name(), outcome.name(),
+                    outcome.name(), FAILURE_RETRY_DELAY_MILLIS, httpStatus,
                     claim.eventId(), claim.claimToken());
             if (updated != 1) {
                 throw new IllegalStateException("Webhook delivery claim is no longer owned");

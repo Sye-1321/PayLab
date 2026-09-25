@@ -143,12 +143,16 @@ A provider transition that requires a callback persists the event and delivery w
 
 Network I/O is not performed while holding a long database transaction. Delivery attempts and retry scheduling are persisted so that process restart does not lose pending work.
 
-Each delivery row has a successful-delivery target. Normal asynchronous success uses a target of one;
-`DUPLICATE_WEBHOOK` uses two for the same immutable event and payload. A successful attempt returns
-the row to immediately due `PENDING` work until the target is reached. Non-2xx and network outcomes
-remain terminal rather than consuming or retrying toward that target. Claim-token checks prevent a
-stale worker from recording over the current lease, although a crash after an HTTP send and before
-result persistence can necessarily cause more wire deliveries than the configured target.
+Each delivery row has a successful-delivery target and a separate failure-retry allowance. Normal
+asynchronous success uses a target of one with no failure retries; `DUPLICATE_WEBHOOK` uses a target
+of two with no failure retries for the same immutable event and payload. Its first successful attempt
+returns the row to immediately due `PENDING` work, while a failure remains terminal.
+`WEBHOOK_RETRY` instead uses a successful-delivery target of one and one persisted failure retry. Its
+first non-2xx or network outcome returns the row to delayed `PENDING` work; success completes the same
+delivery, while a second failure exhausts the allowance and becomes terminal. No transaction remains
+open during the retry delay. Claim-token checks prevent a stale worker from recording over the current
+lease, although a crash after an HTTP send and before result persistence can necessarily cause more
+wire deliveries than the configured policy.
 
 This design keeps the v0.1 consistency model in one transactional store. A message broker can be introduced later if independent consumers or measured throughput justify it.
 

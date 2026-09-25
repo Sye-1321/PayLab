@@ -209,15 +209,27 @@ Without merchant-state evidence, the internal-state assertion is `INCONCLUSIVE`.
 
 **Purpose:** test callback recovery after temporary merchant failure.
 
+**Configuration:** a callback URL is required and `responseDelayMillis` is not accepted.
+
 **Provider behavior:**
 
-1. create one provider event;
-2. attempt delivery;
-3. record a retryable failure;
-4. schedule a later attempt;
-5. deliver the same event identity again.
+1. create one `SUCCEEDED` provider payment and one immutable `PAYMENT_SUCCEEDED` event;
+2. persist one delivery with an allowance of one failure retry;
+3. record a first non-2xx or network failure and return the delivery to delayed `PENDING` work;
+4. deliver the same event ID and exact persisted body bytes again;
+5. mark the delivery `DELIVERED` after a 2xx response, or `FAILED` if the retry also fails.
 
-**Assertions:** payment truth remains unchanged, attempt history is retained, and retry does not create a new payment.
+Each attempt is durably recorded. A non-2xx attempt also records `WEBHOOK_RESPONSE_OBSERVED`; a
+network error has no fabricated HTTP-response evidence. Provider payment truth remains `SUCCEEDED`
+throughout. The retry reuses the original event and delivery rows and does not create another payment
+or event.
+
+`WEBHOOK_RETRY` is failure-driven redelivery. By contrast, `DUPLICATE_WEBHOOK` intentionally requires
+two successful acknowledgements and treats any delivery failure as terminal. Failure retries and the
+successful-delivery target are separate persisted policies.
+
+No conformance evaluator exists for this scenario. A later 2xx response proves transport
+acknowledgement, not exactly-once merchant-internal processing.
 
 **Relevant invariant:** INV-08.
 

@@ -2,6 +2,7 @@ package io.github.sye1321.paylab.webhook;
 
 import java.io.IOException;
 import java.net.InetSocketAddress;
+import java.util.List;
 import java.util.UUID;
 import java.util.concurrent.Callable;
 import java.util.concurrent.CountDownLatch;
@@ -10,6 +11,7 @@ import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import com.sun.net.httpserver.HttpServer;
 import io.github.sye1321.paylab.provider.IdempotencyKey;
@@ -98,6 +100,8 @@ class WebhookDeliveryTests {
         assertEquals("SUCCEEDED", payload.get("data").get("status").asText());
         assertEquals("PENDING", deliveryStatus(event.eventId()));
         assertEquals(0, attemptCount(event.eventId()));
+        assertEquals(0, acknowledgedDeliveryCount(event.eventId()));
+        assertEquals(0, failureCount(event.eventId()));
         assertEquals(1, targetDeliveryCount(event.eventId()));
         assertEquals(RunEventType.WEBHOOK_SCHEDULED,
                 runEvents.findByRun(runId).getLast().eventType());
@@ -154,11 +158,80 @@ class WebhookDeliveryTests {
             assertTrue(webhooks.findEvent(event.eventId()).isPresent());
             assertEquals("FAILED", deliveryStatus(event.eventId()));
             assertEquals(1, attemptCount(event.eventId()));
+            assertEquals(0, acknowledgedDeliveryCount(event.eventId()));
+            assertEquals(1, failureCount(event.eventId()));
             assertEquals(2, targetDeliveryCount(event.eventId()));
             assertEquals(503, lastHttpStatus(event.eventId()));
             assertEquals("NON_2XX", attemptOutcome(event.eventId()));
             assertFalse(runEvents.findByRun(event.runId()).stream()
                     .anyMatch(value -> value.eventType() == RunEventType.WEBHOOK_DELIVERED));
+        }
+    }
+
+    @Test
+    void retryableFailureRequeuesThenDeliversTheSamePersistedEvent() throws Exception {
+        try (SequenceReceiver receiver = new SequenceReceiver(503, 204)) {
+            WebhookEvent event = scheduleRetryableSucceeded(receiver.url());
+
+            worker.deliverOneDue();
+
+            assertEquals("PENDING", deliveryStatus(event.eventId()));
+            assertEquals(1, attemptCount(event.eventId()));
+            assertEquals(0, acknowledgedDeliveryCount(event.eventId()));
+            assertEquals(1, failureCount(event.eventId()));
+            assertEquals(1, deliveryAttemptRows(event.eventId()));
+            assertEquals(List.of("NON_2XX"), attemptOutcomes(event.eventId()));
+            assertEquals(503, lastHttpStatus(event.eventId()));
+            assertTrue(claimTokenIsNull(event.eventId()));
+            assertTrue(claimUntilIsNull(event.eventId()));
+            assertFalse(runEvents.findByRun(event.runId()).stream()
+                    .anyMatch(value -> value.eventType() == RunEventType.WEBHOOK_DELIVERED));
+
+            makeDue(event.eventId());
+            worker.deliverOneDue();
+
+            assertEquals(2, receiver.requests.size());
+            assertEquals(event.eventId().toString(), receiver.requests.get(0).eventId());
+            assertEquals(receiver.requests.get(0).eventId(), receiver.requests.get(1).eventId());
+            assertArrayEquals(event.payload(), receiver.requests.get(0).body());
+            assertArrayEquals(receiver.requests.get(0).body(), receiver.requests.get(1).body());
+            assertEquals("DELIVERED", deliveryStatus(event.eventId()));
+            assertEquals(2, attemptCount(event.eventId()));
+            assertEquals(1, acknowledgedDeliveryCount(event.eventId()));
+            assertEquals(1, failureCount(event.eventId()));
+            assertEquals(2, deliveryAttemptRows(event.eventId()));
+            assertEquals(List.of("NON_2XX", "DELIVERED"), attemptOutcomes(event.eventId()));
+            assertEquals(1, count("webhook_events"));
+            assertEquals(1, count("webhook_deliveries"));
+            assertEquals("SUCCEEDED", paymentStatus(event.paymentId().value()));
+            assertEquals(1, count("provider_payments"));
+            var evidence = runEvents.findByRun(event.runId());
+            assertEquals(2, eventCount(evidence, RunEventType.WEBHOOK_RESPONSE_OBSERVED, event.eventId()));
+            assertEquals(1, eventCount(evidence, RunEventType.WEBHOOK_DELIVERED, event.eventId()));
+        }
+    }
+
+    @Test
+    void retryableDeliveryStopsAfterItsSingleFailureRetryIsExhausted() throws Exception {
+        try (SequenceReceiver receiver = new SequenceReceiver(503, 503)) {
+            WebhookEvent event = scheduleRetryableSucceeded(receiver.url());
+
+            worker.deliverOneDue();
+            assertEquals("PENDING", deliveryStatus(event.eventId()));
+            makeDue(event.eventId());
+            worker.deliverOneDue();
+
+            assertEquals("FAILED", deliveryStatus(event.eventId()));
+            assertEquals(2, attemptCount(event.eventId()));
+            assertEquals(0, acknowledgedDeliveryCount(event.eventId()));
+            assertEquals(2, failureCount(event.eventId()));
+            assertEquals(2, deliveryAttemptRows(event.eventId()));
+            assertEquals(List.of("NON_2XX", "NON_2XX"), attemptOutcomes(event.eventId()));
+            assertTrue(claimTokenIsNull(event.eventId()));
+            assertTrue(claimUntilIsNull(event.eventId()));
+
+            worker.deliverOneDue();
+            assertEquals(2, receiver.requests.size());
         }
     }
 
@@ -172,6 +245,8 @@ class WebhookDeliveryTests {
             assertEquals(1, receiver.requests.size());
             assertEquals("PENDING", deliveryStatus(event.eventId()));
             assertEquals(1, attemptCount(event.eventId()));
+            assertEquals(1, acknowledgedDeliveryCount(event.eventId()));
+            assertEquals(0, failureCount(event.eventId()));
             assertEquals(2, targetDeliveryCount(event.eventId()));
             assertTrue(claimTokenIsNull(event.eventId()));
             assertTrue(claimUntilIsNull(event.eventId()));
@@ -198,11 +273,53 @@ class WebhookDeliveryTests {
             assertEquals(2, deliveryAttemptRows(event.eventId()));
             assertEquals("DELIVERED", deliveryStatus(event.eventId()));
             assertEquals(2, attemptCount(event.eventId()));
+            assertEquals(2, acknowledgedDeliveryCount(event.eventId()));
+            assertEquals(0, failureCount(event.eventId()));
             assertEquals(2, targetDeliveryCount(event.eventId()));
             var evidence = runEvents.findByRun(event.runId());
             assertEquals(1, eventCount(evidence, RunEventType.WEBHOOK_SCHEDULED, event.eventId()));
             assertEquals(2, eventCount(evidence, RunEventType.WEBHOOK_RESPONSE_OBSERVED, event.eventId()));
             assertEquals(2, eventCount(evidence, RunEventType.WEBHOOK_DELIVERED, event.eventId()));
+        }
+    }
+
+    @Test
+    void failureDoesNotAdvanceCombinedAcknowledgementTarget() throws Exception {
+        try (SequenceReceiver receiver = new SequenceReceiver(503, 204, 204)) {
+            WebhookEvent event = scheduleSucceeded(receiver.url(), 2, 1);
+
+            worker.deliverOneDue();
+            assertDeliveryState(event.eventId(), "PENDING", 1, 0, 1);
+
+            makeDue(event.eventId());
+            worker.deliverOneDue();
+            assertDeliveryState(event.eventId(), "PENDING", 2, 1, 1);
+
+            worker.deliverOneDue();
+            assertDeliveryState(event.eventId(), "DELIVERED", 3, 2, 1);
+            assertEquals(3, receiver.requests.size());
+            assertEquals(3, deliveryAttemptRows(event.eventId()));
+            assertEquals(1, count("webhook_events"));
+            assertEquals(1, count("webhook_deliveries"));
+        }
+    }
+
+    @Test
+    void acknowledgementDoesNotConsumeCombinedFailureRetryAllowance() throws Exception {
+        try (SequenceReceiver receiver = new SequenceReceiver(204, 503, 204)) {
+            WebhookEvent event = scheduleSucceeded(receiver.url(), 2, 1);
+
+            worker.deliverOneDue();
+            assertDeliveryState(event.eventId(), "PENDING", 1, 1, 0);
+
+            worker.deliverOneDue();
+            assertDeliveryState(event.eventId(), "PENDING", 2, 1, 1);
+
+            makeDue(event.eventId());
+            worker.deliverOneDue();
+            assertDeliveryState(event.eventId(), "DELIVERED", 3, 2, 1);
+            assertEquals(3, receiver.requests.size());
+            assertEquals(3, deliveryAttemptRows(event.eventId()));
         }
     }
 
@@ -232,12 +349,25 @@ class WebhookDeliveryTests {
     }
 
     private WebhookEvent scheduleSucceeded(String url, int targetDeliveryCount) {
+        return scheduleSucceeded(url, targetDeliveryCount, 0);
+    }
+
+    private WebhookEvent scheduleSucceeded(String url, int targetDeliveryCount, int maxFailureRetries) {
         TestRunId runId = runs.create(ScenarioId.ASYNC_SUCCESS, url).runId();
         Payment payment = payments.createOrResolve(runId, new IdempotencyKey(UUID.randomUUID().toString()), intent())
                 .payment();
         payments.startProcessing(payment.id());
         payments.markSucceeded(payment.id());
-        return scheduler.schedule(runId, payment.id(), targetDeliveryCount);
+        return scheduler.schedule(runId, payment.id(), targetDeliveryCount, maxFailureRetries);
+    }
+
+    private WebhookEvent scheduleRetryableSucceeded(String url) {
+        TestRunId runId = runs.create(ScenarioId.WEBHOOK_RETRY, url).runId();
+        Payment payment = payments.createOrResolve(runId, new IdempotencyKey(UUID.randomUUID().toString()), intent())
+                .payment();
+        payments.startProcessing(payment.id());
+        payments.markSucceeded(payment.id());
+        return scheduler.schedule(runId, payment.id(), 1, 1);
     }
 
     private static PaymentIntent intent() {
@@ -259,6 +389,24 @@ class WebhookDeliveryTests {
     private int targetDeliveryCount(UUID id) {
         return jdbc.queryForObject("SELECT target_delivery_count FROM webhook_deliveries WHERE event_id = ?",
                 Integer.class, id);
+    }
+
+    private int acknowledgedDeliveryCount(UUID id) {
+        return jdbc.queryForObject(
+                "SELECT acknowledged_delivery_count FROM webhook_deliveries WHERE event_id = ?",
+                Integer.class, id);
+    }
+
+    private int failureCount(UUID id) {
+        return jdbc.queryForObject("SELECT failure_count FROM webhook_deliveries WHERE event_id = ?",
+                Integer.class, id);
+    }
+
+    private void assertDeliveryState(UUID id, String status, int attempts, int acknowledgements, int failures) {
+        assertEquals(status, deliveryStatus(id));
+        assertEquals(attempts, attemptCount(id));
+        assertEquals(acknowledgements, acknowledgedDeliveryCount(id));
+        assertEquals(failures, failureCount(id));
     }
 
     private int deliveryAttemptRows(UUID id) {
@@ -289,6 +437,21 @@ class WebhookDeliveryTests {
 
     private String attemptOutcome(UUID id) {
         return jdbc.queryForObject("SELECT outcome FROM webhook_delivery_attempts WHERE event_id = ?", String.class, id);
+    }
+
+    private List<String> attemptOutcomes(UUID id) {
+        return jdbc.queryForList("""
+                SELECT outcome FROM webhook_delivery_attempts
+                WHERE event_id = ? ORDER BY attempted_at
+                """, String.class, id);
+    }
+
+    private void makeDue(UUID id) {
+        jdbc.update("UPDATE webhook_deliveries SET due_at = now() WHERE event_id = ?", id);
+    }
+
+    private String paymentStatus(String id) {
+        return jdbc.queryForObject("SELECT status FROM provider_payments WHERE payment_id = ?", String.class, id);
     }
 
     private static final class Received {
@@ -339,6 +502,36 @@ class WebhookDeliveryTests {
                         exchange.getRequestHeaders().getFirst("PayLab-Timestamp"),
                         exchange.getRequestHeaders().getFirst("PayLab-Signature")));
                 exchange.sendResponseHeaders(204, -1);
+                exchange.close();
+            });
+            server.start();
+        }
+
+        String url() {
+            return "http://localhost:" + server.getAddress().getPort() + "/webhooks/paylab";
+        }
+
+        @Override
+        public void close() {
+            server.stop(0);
+        }
+    }
+
+    private static final class SequenceReceiver implements AutoCloseable {
+        private final HttpServer server;
+        private final int[] statuses;
+        private final AtomicInteger nextStatus = new AtomicInteger();
+        private final CopyOnWriteArrayList<ReceivedRequest> requests = new CopyOnWriteArrayList<>();
+
+        SequenceReceiver(int... statuses) throws IOException {
+            this.statuses = statuses;
+            server = HttpServer.create(new InetSocketAddress("localhost", 0), 0);
+            server.createContext("/webhooks/paylab", exchange -> {
+                requests.add(new ReceivedRequest(exchange.getRequestBody().readAllBytes(),
+                        exchange.getRequestHeaders().getFirst("PayLab-Event-Id"),
+                        exchange.getRequestHeaders().getFirst("PayLab-Timestamp"),
+                        exchange.getRequestHeaders().getFirst("PayLab-Signature")));
+                exchange.sendResponseHeaders(statuses[nextStatus.getAndIncrement()], -1);
                 exchange.close();
             });
             server.start();
