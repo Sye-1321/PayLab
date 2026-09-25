@@ -2,6 +2,7 @@ package io.github.sye1321.paylab.run;
 
 import java.sql.ResultSet;
 import java.sql.SQLException;
+import java.sql.Timestamp;
 import java.util.Optional;
 import java.util.UUID;
 
@@ -31,7 +32,8 @@ public class JdbcTestRunStore {
         TestRun run = jdbc.queryForObject("""
                 INSERT INTO test_runs (run_id, scenario_id, scenario_version, webhook_url, response_delay_millis)
                 VALUES (?, ?, 1, ?, ?)
-                RETURNING run_id, scenario_id, scenario_version, created_at, webhook_url, response_delay_millis
+                RETURNING run_id, scenario_id, scenario_version, created_at, webhook_url, response_delay_millis,
+                          finalized_at
                 """, JdbcTestRunStore::readRun, id.value(), scenario.name(), webhookUrl, responseDelayMillis);
         events.appendRunStarted(id);
         return run;
@@ -39,7 +41,8 @@ public class JdbcTestRunStore {
 
     public Optional<TestRun> findById(TestRunId id) {
         return jdbc.query("""
-                SELECT run_id, scenario_id, scenario_version, created_at, webhook_url, response_delay_millis
+                SELECT run_id, scenario_id, scenario_version, created_at, webhook_url, response_delay_millis,
+                       finalized_at
                 FROM test_runs WHERE run_id = ?
                 """, JdbcTestRunStore::readRun, id.value()).stream().findFirst();
     }
@@ -48,11 +51,35 @@ public class JdbcTestRunStore {
         return findById(id).orElseThrow(() -> new TestRunNotFoundException(id));
     }
 
+    public TestRun requireForUpdate(TestRunId id) {
+        return jdbc.query("""
+                SELECT run_id, scenario_id, scenario_version, created_at, webhook_url, response_delay_millis,
+                       finalized_at
+                FROM test_runs WHERE run_id = ?
+                FOR UPDATE
+                """, JdbcTestRunStore::readRun, id.value()).stream().findFirst()
+                .orElseThrow(() -> new TestRunNotFoundException(id));
+    }
+
+    public TestRun requireOpen(TestRunId id) {
+        TestRun run = require(id);
+        if (run.finalizedAt() != null) {
+            throw new TestRunFinalizedException(id);
+        }
+        return run;
+    }
+
+    public void markFinalized(TestRunId id) {
+        jdbc.update("UPDATE test_runs SET finalized_at = now() WHERE run_id = ?", id.value());
+    }
+
     private static TestRun readRun(ResultSet rs, int rowNum) throws SQLException {
+        Timestamp finalizedAt = rs.getTimestamp("finalized_at");
         return new TestRun(new TestRunId(rs.getObject("run_id", UUID.class)),
                 ScenarioId.valueOf(rs.getString("scenario_id")),
                 rs.getInt("scenario_version"),
                 rs.getTimestamp("created_at").toInstant(), rs.getString("webhook_url"),
-                rs.getObject("response_delay_millis", Integer.class));
+                rs.getObject("response_delay_millis", Integer.class),
+                finalizedAt == null ? null : finalizedAt.toInstant());
     }
 }

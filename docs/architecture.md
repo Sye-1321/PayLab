@@ -76,9 +76,10 @@ sourced.
 ### Conformance evaluation
 
 The current conformance endpoint evaluates `TIMEOUT_AFTER_COMMIT`, `SAME_KEY_RETRY`, and
-`KEY_REUSE_DIFFERENT_PAYLOAD`. Evaluators read persisted events and authoritative provider payments
-without writing results or completion events. A fixed database snapshot therefore produces the same
-evaluation, while later request evidence can change a subsequent evaluation.
+`KEY_REUSE_DIFFERENT_PAYLOAD`. Open runs are evaluated from persisted events and authoritative
+provider payments. Finalization stores the exact evaluation and sets `test_runs.finalized_at` in one
+transaction. Finalized conformance requests read that snapshot rather than later evidence, and new
+run-scoped payment creation and lookup requests are rejected.
 
 ## Idempotency boundary
 
@@ -129,7 +130,8 @@ The persisted records that materially define current behavior are:
 - run events;
 - webhook events;
 - webhook deliveries;
-- delivery attempts.
+- delivery attempts;
+- finalized conformance results and their ordered assertions.
 
 ## Current testing
 

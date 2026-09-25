@@ -87,8 +87,9 @@ for scenario behavior and [`docs/security.md`](docs/security.md) for trust bound
 - `SAME_KEY_RETRY` against `INV-02`;
 - `KEY_REUSE_DIFFERENT_PAYLOAD` against `INV-03`.
 
-Evaluation reads the current evidence snapshot and does not finalize the run or persist a verdict.
-Other scenarios currently have no conformance evaluator.
+Open runs are evaluated from their current evidence. A supported run can be finalized with
+`POST /test-runs/{runId}/finalize`; afterward, conformance requests return the persisted immutable
+evaluation snapshot. Other scenarios currently have no conformance evaluator and cannot be finalized.
 
 ## Safety and scope
 

@@ -6,6 +6,7 @@ import io.github.sye1321.paylab.run.PreCommitFailureException;
 import io.github.sye1321.paylab.run.ConcurrentCreateExecutionException;
 import io.github.sye1321.paylab.run.ResponseDelayApplier;
 import io.github.sye1321.paylab.run.TestRunNotFoundException;
+import io.github.sye1321.paylab.run.TestRunFinalizedException;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.http.converter.HttpMessageNotReadableException;
@@ -55,6 +56,12 @@ public class PaymentHttpErrors {
     ResponseEntity<ApiError> runNotFound() {
         return ResponseEntity.status(HttpStatus.NOT_FOUND)
                 .body(new ApiError("TEST_RUN_NOT_FOUND", "Test run not found"));
+    }
+
+    @ExceptionHandler(TestRunFinalizedException.class)
+    ResponseEntity<ApiError> runFinalized() {
+        return ResponseEntity.status(HttpStatus.CONFLICT)
+                .body(new ApiError("TEST_RUN_FINALIZED", "Test run is finalized"));
     }
 
     @ExceptionHandler({MethodArgumentNotValidException.class, HandlerMethodValidationException.class,

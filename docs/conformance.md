@@ -86,9 +86,16 @@ Conflicting key reuse takes precedence over safe distinct-intent evidence.
 
 ## Evaluation lifecycle
 
-The endpoint evaluates the current evidence snapshot. It does not append events, persist a verdict,
-complete a run, or mutate payment state. Later evidence can therefore change a subsequent response.
-Each assertion includes the evidence references supporting its decision.
+For an open run, the endpoint evaluates the current evidence snapshot without persisting a verdict.
+Later evidence can therefore change a subsequent response. Each assertion includes the evidence
+references supporting its decision.
+
+`POST /test-runs/{runId}/finalize` is available for `TIMEOUT_AFTER_COMMIT`, `SAME_KEY_RETRY`, and
+`KEY_REUSE_DIFFERENT_PAYLOAD`. It persists the current evaluation, whether `PASS`, `FAIL`, or
+`INCONCLUSIVE`, and marks the run finalized in the same transaction. Repeated finalization and later
+`GET /test-runs/{runId}/conformance` requests return that immutable snapshot. New run-scoped payment
+creation and status-query requests are rejected after finalization. Unsupported scenarios return
+`UNSUPPORTED_CONFORMANCE_SCENARIO` and remain open.
 
 ## Conformance is not certification
 

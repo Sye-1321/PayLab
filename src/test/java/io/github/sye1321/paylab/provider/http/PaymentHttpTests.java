@@ -361,6 +361,53 @@ class PaymentHttpTests {
     }
 
     @Test
+    void finalizedConformanceIsImmutableAndRejectsNewMerchantOperations() throws Exception {
+        runId = createSameKeyRetryRun();
+        String key = UUID.randomUUID().toString();
+        HttpResponse<String> originalPayment = post(key, VALID_BODY);
+        assertEquals(200, originalPayment.statusCode());
+        JsonNode payment = JSON.readTree(originalPayment.body());
+        assertEquals(200, post(key, VALID_BODY).statusCode());
+
+        JsonNode live = conformance();
+        assertEquals("PASS", live.get("verdict").asText());
+
+        HttpResponse<String> finalizedResponse = finalizeRun();
+        assertEquals(200, finalizedResponse.statusCode());
+        JsonNode finalized = JSON.readTree(finalizedResponse.body());
+        assertEquals(live, finalized);
+
+        HttpRequest runRequest = HttpRequest.newBuilder(
+                URI.create("http://localhost:" + port + "/test-runs/" + runId)).GET().build();
+        HttpResponse<String> runResponse = HTTP.send(runRequest, HttpResponse.BodyHandlers.ofString());
+        assertEquals(200, runResponse.statusCode());
+        JsonNode run = JSON.readTree(runResponse.body());
+        assertFalse(run.get("finalizedAt").isNull());
+
+        HttpResponse<String> repeatedFinalization = finalizeRun();
+        assertEquals(200, repeatedFinalization.statusCode());
+        assertEquals(finalized, JSON.readTree(repeatedFinalization.body()));
+        int observedBeforeRejection = runEventCount("MERCHANT_REQUEST_OBSERVED");
+        int queriesBeforeRejection = runEventCount("MERCHANT_STATUS_QUERY_OBSERVED");
+
+        HttpResponse<String> rejectedCreate = post("late-key", VALID_BODY);
+        HttpResponse<String> rejectedLookup = get(payment.get("paymentId").asText());
+
+        assertEquals(409, rejectedCreate.statusCode());
+        assertEquals("TEST_RUN_FINALIZED", JSON.readTree(rejectedCreate.body()).get("code").asText());
+        assertEquals(409, rejectedLookup.statusCode());
+        assertEquals("TEST_RUN_FINALIZED", JSON.readTree(rejectedLookup.body()).get("code").asText());
+        assertEquals(observedBeforeRejection, runEventCount("MERCHANT_REQUEST_OBSERVED"));
+        assertEquals(queriesBeforeRejection, runEventCount("MERCHANT_STATUS_QUERY_OBSERVED"));
+
+        String fingerprint = event(getEvents(), "MERCHANT_REQUEST_OBSERVED", 0)
+                .get("requestFingerprint").asText();
+        appendObserved("straggler-key", fingerprint);
+
+        assertEquals(finalized, conformance());
+    }
+
+    @Test
     void sameKeyRetryEquivalentNewKeyTakesFailurePrecedence() throws Exception {
         runId = createSameKeyRetryRun();
         assertEquals(200, post("original-key", VALID_BODY).statusCode());
@@ -1077,6 +1124,19 @@ class PaymentHttpTests {
 
         assertEquals(400, response.statusCode());
         assertEquals("UNSUPPORTED_CONFORMANCE_SCENARIO", JSON.readTree(response.body()).get("code").asText());
+
+        HttpResponse<String> finalizeResponse = finalizeRun();
+        assertEquals(400, finalizeResponse.statusCode());
+        assertEquals("UNSUPPORTED_CONFORMANCE_SCENARIO",
+                JSON.readTree(finalizeResponse.body()).get("code").asText());
+
+        HttpRequest runRequest = HttpRequest.newBuilder(
+                URI.create("http://localhost:" + port + "/test-runs/" + runId)).GET().build();
+        JsonNode run = JSON.readTree(HTTP.send(runRequest, HttpResponse.BodyHandlers.ofString()).body());
+        assertTrue(run.get("finalizedAt").isNull());
+        assertEquals(0, jdbc.queryForObject(
+                "SELECT count(*) FROM finalized_conformance_results WHERE run_id = ?",
+                Integer.class, UUID.fromString(runId)));
     }
 
     @Test
@@ -1265,6 +1325,13 @@ class PaymentHttpTests {
         HttpResponse<String> response = HTTP.send(request, HttpResponse.BodyHandlers.ofString());
         assertEquals(200, response.statusCode());
         return JSON.readTree(response.body());
+    }
+
+    private HttpResponse<String> finalizeRun() throws IOException, InterruptedException {
+        HttpRequest request = HttpRequest.newBuilder(
+                URI.create("http://localhost:" + port + "/test-runs/" + runId + "/finalize"))
+                .POST(HttpRequest.BodyPublishers.noBody()).build();
+        return HTTP.send(request, HttpResponse.BodyHandlers.ofString());
     }
 
     private void appendObserved(String key, String fingerprint) {

@@ -54,7 +54,7 @@ public class PaymentRequestOrchestrator {
     }
 
     public PaymentRequestResult create(TestRunId runId, IdempotencyKey key, PaymentIntent intent) {
-        TestRun run = runs.require(runId);
+        TestRun run = runs.requireOpen(runId);
         events.appendMerchantRequestObserved(runId, key, intent.fingerprint());
         if (run.scenario() == ScenarioId.TIMEOUT_BEFORE_COMMIT) {
             return timeoutBeforeCommit.execute(run, key, intent);
@@ -83,7 +83,7 @@ public class PaymentRequestOrchestrator {
     }
 
     public Optional<Payment> findById(TestRunId runId, PaymentId id) {
-        runs.require(runId);
+        runs.requireOpen(runId);
         Optional<Payment> payment = payments.findById(runId, id);
         payment.ifPresent(found -> events.appendMerchantStatusQueryObserved(runId, found.id()));
         return payment;

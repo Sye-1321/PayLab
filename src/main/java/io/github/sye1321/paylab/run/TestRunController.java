@@ -5,10 +5,7 @@ import java.util.List;
 import java.util.UUID;
 
 import io.github.sye1321.paylab.conformance.ConformanceEvaluation;
-import io.github.sye1321.paylab.conformance.KeyReuseDifferentPayloadConformanceEvaluator;
-import io.github.sye1321.paylab.conformance.SameKeyRetryConformanceEvaluator;
-import io.github.sye1321.paylab.conformance.TimeoutAfterCommitConformanceEvaluator;
-import io.github.sye1321.paylab.conformance.UnsupportedConformanceScenarioException;
+import io.github.sye1321.paylab.conformance.ConformanceService;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.NotNull;
 import org.springframework.http.HttpStatus;
@@ -27,20 +24,14 @@ public class TestRunController {
     private final JdbcTestRunStore store;
     private final JdbcRunEventStore events;
     private final WebhookUrlValidator webhookUrls;
-    private final TimeoutAfterCommitConformanceEvaluator timeoutAfterCommitConformance;
-    private final SameKeyRetryConformanceEvaluator sameKeyRetryConformance;
-    private final KeyReuseDifferentPayloadConformanceEvaluator keyReuseDifferentPayloadConformance;
+    private final ConformanceService conformance;
 
     public TestRunController(JdbcTestRunStore store, JdbcRunEventStore events, WebhookUrlValidator webhookUrls,
-            TimeoutAfterCommitConformanceEvaluator timeoutAfterCommitConformance,
-            SameKeyRetryConformanceEvaluator sameKeyRetryConformance,
-            KeyReuseDifferentPayloadConformanceEvaluator keyReuseDifferentPayloadConformance) {
+            ConformanceService conformance) {
         this.store = store;
         this.events = events;
         this.webhookUrls = webhookUrls;
-        this.timeoutAfterCommitConformance = timeoutAfterCommitConformance;
-        this.sameKeyRetryConformance = sameKeyRetryConformance;
-        this.keyReuseDifferentPayloadConformance = keyReuseDifferentPayloadConformance;
+        this.conformance = conformance;
     }
 
     @PostMapping
@@ -91,24 +82,22 @@ public class TestRunController {
 
     @GetMapping("/{runId}/conformance")
     public ConformanceEvaluation conformance(@PathVariable UUID runId) {
-        TestRunId id = new TestRunId(runId);
-        TestRun run = store.require(id);
-        return switch (run.scenario()) {
-            case TIMEOUT_AFTER_COMMIT -> timeoutAfterCommitConformance.evaluate(id);
-            case SAME_KEY_RETRY -> sameKeyRetryConformance.evaluate(id);
-            case KEY_REUSE_DIFFERENT_PAYLOAD -> keyReuseDifferentPayloadConformance.evaluate(id);
-            default -> throw new UnsupportedConformanceScenarioException(run.scenario());
-        };
+        return conformance.evaluate(new TestRunId(runId));
+    }
+
+    @PostMapping("/{runId}/finalize")
+    public ConformanceEvaluation finalizeRun(@PathVariable UUID runId) {
+        return conformance.finalizeRun(new TestRunId(runId));
     }
 
     public record CreateTestRunRequest(@NotNull ScenarioId scenario, String webhookUrl, Integer responseDelayMillis) {
     }
 
     public record TestRunResponse(UUID runId, ScenarioId scenario, int scenarioVersion,
-            Instant createdAt, String webhookUrl, Integer responseDelayMillis) {
+            Instant createdAt, String webhookUrl, Integer responseDelayMillis, Instant finalizedAt) {
         static TestRunResponse from(TestRun run) {
             return new TestRunResponse(run.runId().value(), run.scenario(), run.scenarioVersion(), run.createdAt(),
-                    run.webhookUrl(), run.responseDelayMillis());
+                    run.webhookUrl(), run.responseDelayMillis(), run.finalizedAt());
         }
     }
 
