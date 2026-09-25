@@ -1,4 +1,4 @@
-# ADR-0003: Separate Black-Box Evidence from Optional Merchant Probe Evidence
+# ADR-0003: Separate Provider-Boundary Evidence from Merchant-Internal Evidence
 
 **Status:** Accepted
 
@@ -12,13 +12,15 @@ For example, three `200 OK` responses to duplicate webhooks do not prove that in
 
 Assertions declare the evidence they require.
 
-Black-box assertions use provider-side and HTTP-boundary evidence. Assertions about merchant-internal state may use an optional test-only probe.
+Black-box assertions use provider-side and HTTP-boundary evidence. PayLab does not infer
+merchant-internal state or side effects from HTTP acknowledgements.
 
-If the required evidence is unavailable, the assertion returns `INCONCLUSIVE` rather than `PASS`.
+If an assertion requires evidence outside the current provider boundary, insufficient evidence
+produces `INCONCLUSIVE` rather than `PASS`.
 
 ## Consequences
 
-- PayLab remains useful without merchant instrumentation;
-- deeper assertions are possible when a probe is available;
-- reports distinguish observed behavior from inferred internal behavior;
-- probe design must remain narrow and test-only rather than becoming a general introspection API.
+- provider and HTTP observations remain useful without merchant instrumentation;
+- verdicts distinguish established behavior from behavior that is not observable;
+- assertions requiring merchant-internal evidence remain `INCONCLUSIVE` when that evidence is
+  unavailable.

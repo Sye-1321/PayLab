@@ -14,12 +14,11 @@ Store callback delivery work in PostgreSQL.
 
 Workers claim due work with database concurrency primitives suitable for multiple consumers, such as row locking with `SKIP LOCKED`. Network I/O occurs outside long-running database transactions, and each delivery attempt is recorded before retry state is advanced.
 
-A separate message broker is not part of this design unless an independent throughput or consumer requirement appears.
+A separate message broker is not part of this design.
 
 ## Consequences
 
 - payment/event/delivery durability can be coordinated in one transactional store;
 - process restart does not lose pending callback work;
 - local operation stays simple;
-- PostgreSQL carries both application state and durable work, so queue pressure must be observable;
-- a broker remains an available future option if the workload requires it.
+- PostgreSQL carries both application state and durable work.

@@ -88,11 +88,12 @@ Failure to deliver a callback does not undo or recreate the provider payment. Re
 
 PayLab must not report `PASS` for an assertion that cannot be established from the evidence available to the run.
 
-When an assertion depends on merchant-internal behavior that is not observable in black-box mode and no probe evidence is available, the assertion is `INCONCLUSIVE`.
+When an assertion depends on merchant-internal behavior outside PayLab's observation boundary,
+insufficient evidence yields `INCONCLUSIVE`.
 
 **Why:** a conformance tool should expose uncertainty rather than convert missing evidence into confidence.
 
-**Covered by:** the conformance engine and any probe-dependent assertion.
+**Covered by:** the conformance engine and any assertion requiring merchant-internal evidence.
 
 ## Provider model rules
 

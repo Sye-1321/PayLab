@@ -8,7 +8,7 @@ Security work focuses on the integration boundary and on preventing the harness 
 
 - webhook signing secrets;
 - payment/test evidence;
-- target configuration;
+- configured callback targets;
 - provider-state integrity;
 - conformance-result integrity.
 
@@ -27,7 +27,9 @@ PayLab <---- trusted application connection ----> PostgreSQL
 
 PayLab signs callbacks using HMAC over a timestamp and the exact raw body.
 
-The reference integration verifies the received raw bytes before trusting the event. Parsing and reserializing JSON before verification is not equivalent because serialization can change the byte representation.
+Merchant integrations must verify the signature against the received raw bytes before trusting the
+event. Parsing and reserializing JSON before verification is not equivalent because serialization
+can change the byte representation.
 
 `INVALID_SIGNATURE` sends the normal immutable event and exact persisted body with only the
 `PayLab-Signature` value intentionally corrupted. Its delivery policy is persisted independently of
@@ -39,7 +41,8 @@ side effects; the scenario therefore has no conformance evaluator yet.
 
 Provider events carry stable identities. Repeated delivery of the same event is expected behavior and must not be interpreted as multiple provider events.
 
-A timestamp freshness policy can bound acceptance of old callbacks. Duplicate delivery is exercised by `DUPLICATE_WEBHOOK`; broader replay policy can be extended independently.
+Merchant integrations should apply an appropriate timestamp freshness policy to bound acceptance of
+old callbacks. Duplicate delivery is exercised by `DUPLICATE_WEBHOOK`.
 
 ## Stale event delivery
 
@@ -72,9 +75,9 @@ not stored with runs.
 
 ## Secret handling
 
-- secrets are supplied through environment/configuration rather than committed to source;
-- signing secrets are redacted from logs and reports;
-- evidence stores the metadata required to explain verification without persisting secret material.
+- the signing key is supplied through environment/configuration;
+- there is no default signing secret;
+- the signing secret is not stored in test-run records.
 
 For the current callback contract, `PayLab-Signature` is lowercase hexadecimal HMAC-SHA256 over
 `UTF8(PayLab-Timestamp) || "." || exactRawBody`. `PayLab-Timestamp` contains Unix epoch seconds and
@@ -83,13 +86,13 @@ For the current callback contract, `PayLab-Signature` is lowercase hexadecimal H
 
 ## Evidence integrity
 
-Run evidence is append-only at the application level. Reports refer back to recorded evidence instead of rewriting history to match the current projection.
+Run evidence is append-only at the application level. Conformance responses refer to persisted event
+IDs rather than rewriting evidence to match the current evaluation.
 
 Cryptographic evidence-chain sealing is outside the current scope.
 
-## Resource limits
-
-Test runs and callback retries are bounded. Payload size, retry count, and execution duration require limits so a target cannot create unbounded work.
+Webhook retry allowances and the concurrent-create peer wait are bounded by the implemented scenario
+policies.
 
 ## Explicit non-goals
 
@@ -99,5 +102,4 @@ PayLab does not provide:
 - secure processing of real cardholder data;
 - production merchant authentication;
 - multi-tenant isolation guarantees;
-- bank-grade operational security;
 - proof that a merchant is safe outside the scenarios and evidence evaluated by PayLab.

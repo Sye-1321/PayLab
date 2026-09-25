@@ -169,10 +169,10 @@ the result can cause an additional attempt beyond the configured target.
 
 **Black-box assertions:** the repeated deliveries occur as configured and merchant responses are recorded.
 
-**Probe-backed assertion:** the merchant processes one logical event / business side effect.
+**Merchant-internal condition:** the merchant processes one logical event / business side effect.
 
-No conformance evaluator or merchant probe is implemented for this scenario. Exactly-once internal
-processing therefore cannot be inferred from HTTP acknowledgements.
+No conformance evaluator currently exists for this scenario. Exactly-once internal processing
+cannot be established from HTTP acknowledgements alone.
 
 **Relevant invariants:** INV-06, INV-09.
 
@@ -207,13 +207,12 @@ one-attempt delivery semantics. Provider truth remains `SUCCEEDED` after both ca
 The late processing event is authentic but stale. Authenticity does not imply freshness or semantic
 applicability.
 
-**Probe-backed pass condition:** merchant state remains semantically `SUCCEEDED`.
+**Merchant-internal condition:** merchant state remains semantically `SUCCEEDED` rather than
+regressing to `PROCESSING`.
 
-**Probe-backed failure condition:** merchant regresses to `PROCESSING`.
-
-No conformance evaluator or merchant probe is implemented for this scenario. HTTP acknowledgement
-of both callbacks proves transport receipt, not that merchant state remained monotonic; without
-merchant-state evidence, the internal-state assertion is `INCONCLUSIVE`.
+No conformance evaluator currently exists for this scenario. HTTP acknowledgement of both callbacks
+proves transport receipt, not that merchant state remained monotonic; without merchant-internal
+evidence, the assertion is `INCONCLUSIVE`.
 
 **Relevant invariants:** INV-07, INV-09.
 
@@ -294,7 +293,3 @@ uniqueness and transaction behavior are part of the scenario. The v0.1 rendezvou
 so both initial race participants must reach the same PayLab application instance.
 
 **Relevant invariant:** INV-04.
-
-## Scenario reproducibility
-
-A run records the scenario identity, scenario version, relevant parameters, and deterministic seed where randomness is used. Reproduction targets the same logical fault sequence; real network duration does not need to be byte-for-byte identical.
