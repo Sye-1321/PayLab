@@ -29,7 +29,11 @@ PayLab signs callbacks using HMAC over a timestamp and the exact raw body.
 
 The reference integration verifies the received raw bytes before trusting the event. Parsing and reserializing JSON before verification is not equivalent because serialization can change the byte representation.
 
-`INVALID_SIGNATURE` covers forged or tampered callback evidence.
+`INVALID_SIGNATURE` sends the normal immutable event and exact persisted body with only the
+`PayLab-Signature` value intentionally corrupted. Its delivery policy is persisted independently of
+the test-run scenario, so workers do not infer security behavior from mutable control-plane state.
+An HTTP rejection is useful transport evidence, but cannot prove the absence of merchant-internal
+side effects; the scenario therefore has no conformance evaluator yet.
 
 ## Duplicate and replayed events
 

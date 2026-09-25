@@ -38,17 +38,23 @@ public class SuccessfulPaymentWebhookScheduler {
 
     @Transactional
     public WebhookEvent schedule(TestRunId runId, PaymentId paymentId) {
-        return schedule(runId, paymentId, 1);
+        return schedule(runId, paymentId, 1, 0, SignatureMode.VALID);
     }
 
     @Transactional
     public WebhookEvent schedule(TestRunId runId, PaymentId paymentId, int targetDeliveryCount) {
-        return schedule(runId, paymentId, targetDeliveryCount, 0);
+        return schedule(runId, paymentId, targetDeliveryCount, 0, SignatureMode.VALID);
     }
 
     @Transactional
     public WebhookEvent schedule(TestRunId runId, PaymentId paymentId, int targetDeliveryCount,
             int maxFailureRetries) {
+        return schedule(runId, paymentId, targetDeliveryCount, maxFailureRetries, SignatureMode.VALID);
+    }
+
+    @Transactional
+    public WebhookEvent schedule(TestRunId runId, PaymentId paymentId, int targetDeliveryCount,
+            int maxFailureRetries, SignatureMode signatureMode) {
         TestRun run = runs.require(runId);
         if (run.webhookUrl() == null || run.webhookUrl().isBlank()) {
             throw new WebhookSchedulingException("Test run has no webhook URL");
@@ -73,7 +79,7 @@ public class SuccessfulPaymentWebhookScheduler {
         }
         WebhookEvent event = new WebhookEvent(eventId, runId, paymentId,
                 WebhookEventType.PAYMENT_SUCCEEDED, rawPayload, createdAt);
-        if (webhooks.insertEventAndDelivery(event, targetDeliveryCount, maxFailureRetries)) {
+        if (webhooks.insertEventAndDelivery(event, targetDeliveryCount, maxFailureRetries, signatureMode)) {
             runEvents.appendWebhookScheduled(runId, eventId);
             return event;
         }

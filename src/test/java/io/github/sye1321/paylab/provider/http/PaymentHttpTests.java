@@ -195,6 +195,43 @@ class PaymentHttpTests {
     }
 
     @Test
+    void invalidSignatureScenarioPersistsOneImmutableInvalidDeliveryAcrossReplay() throws Exception {
+        HttpResponse<String> run = postRun("""
+                {"scenario":"INVALID_SIGNATURE","webhookUrl":"http://localhost:8081/webhooks/paylab"}
+                """);
+        assertEquals(201, run.statusCode());
+        runId = JSON.readTree(run.body()).get("runId").asText();
+        String key = UUID.randomUUID().toString();
+
+        HttpResponse<String> first = post(key, VALID_BODY);
+        HttpResponse<String> replay = post(key, VALID_BODY);
+
+        assertEquals(200, first.statusCode());
+        assertEquals(200, replay.statusCode());
+        assertEquals(JSON.readTree(first.body()).get("paymentId").asText(),
+                JSON.readTree(replay.body()).get("paymentId").asText());
+        assertEquals("SUCCEEDED", JSON.readTree(replay.body()).get("status").asText());
+        assertEquals(1L, count("provider_payments"));
+        assertEquals(1L, count("webhook_events"));
+        assertEquals(1L, count("webhook_deliveries"));
+        assertEquals(1, runEventCount("PAYMENT_COMMITTED"));
+        assertEquals(1, runEventCount("WEBHOOK_SCHEDULED"));
+        var policy = jdbc.queryForMap("""
+                SELECT d.signature_mode, d.target_delivery_count, d.max_failure_retries,
+                       d.attempt_count, d.acknowledged_delivery_count, d.failure_count, d.status
+                FROM webhook_deliveries d
+                JOIN webhook_events e ON e.event_id = d.event_id WHERE e.run_id = ?
+                """, UUID.fromString(runId));
+        assertEquals("INVALID", policy.get("signature_mode"));
+        assertEquals(1, policy.get("target_delivery_count"));
+        assertEquals(0, policy.get("max_failure_retries"));
+        assertEquals(0, policy.get("attempt_count"));
+        assertEquals(0, policy.get("acknowledged_delivery_count"));
+        assertEquals(0, policy.get("failure_count"));
+        assertEquals("PENDING", policy.get("status"));
+    }
+
+    @Test
     void equivalentReplayIsScenarioIdempotent() throws Exception {
         String key = UUID.randomUUID().toString();
 
@@ -929,6 +966,16 @@ class PaymentHttpTests {
                 """).statusCode());
         assertEquals(400, postRun("""
                 {"scenario":"WEBHOOK_RETRY","webhookUrl":"http://localhost/webhook",
+                 "responseDelayMillis":10}
+                """).statusCode());
+        assertEquals(201, postRun("""
+                {"scenario":"INVALID_SIGNATURE","webhookUrl":"http://localhost:8081/webhooks/paylab"}
+                """).statusCode());
+        assertEquals(400, postRun("""
+                {"scenario":"INVALID_SIGNATURE"}
+                """).statusCode());
+        assertEquals(400, postRun("""
+                {"scenario":"INVALID_SIGNATURE","webhookUrl":"http://localhost/webhook",
                  "responseDelayMillis":10}
                 """).statusCode());
         assertEquals(400, postRun("""

@@ -239,9 +239,19 @@ acknowledgement, not exactly-once merchant-internal processing.
 
 **Purpose:** test rejection of untrusted callback evidence.
 
-**Provider behavior:** deliver a structurally valid callback with an intentionally invalid signature. A tampered-body variant may sign one body and deliver altered bytes.
+**Configuration:** a callback URL is required and `responseDelayMillis` is not accepted.
 
-**Pass condition:** the merchant rejects the callback according to the integration contract and does not treat it as trusted payment evidence.
+**Provider behavior:** progress one provider payment through `CREATED -> PROCESSING -> SUCCEEDED`,
+then persist one normal, immutable `PAYMENT_SUCCEEDED` event and one delivery. The event ID, payment
+data, timestamp format, and exact raw JSON body are unchanged. For the single delivery attempt,
+PayLab computes the normal HMAC-SHA256 signature and deterministically corrupts one hexadecimal
+character, leaving a plausible 64-character lowercase hexadecimal value. The persisted delivery
+policy is `signature_mode = INVALID`, a target of one, and no failure retries.
+
+The merchant HTTP response is recorded. A non-2xx response makes the delivery `FAILED`; a 2xx response
+means only that the HTTP endpoint acknowledged the request. HTTP rejection is transport evidence and
+does not by itself prove the merchant avoided payment-state updates, fulfillment, or other internal
+side effects. No conformance evaluator is implemented for this scenario.
 
 **Relevant invariant:** INV-05.
 

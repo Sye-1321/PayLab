@@ -19,6 +19,7 @@ public class PaymentRequestOrchestrator {
     private final AsyncSuccessScenarioExecutor asyncSuccess;
     private final DuplicateWebhookScenarioExecutor duplicateWebhook;
     private final WebhookRetryScenarioExecutor webhookRetry;
+    private final InvalidSignatureScenarioExecutor invalidSignature;
     private final SameKeyRetryScenarioExecutor sameKeyRetry;
     private final KeyReuseDifferentPayloadScenarioExecutor keyReuseDifferentPayload;
     private final TimeoutBeforeCommitScenarioExecutor timeoutBeforeCommit;
@@ -28,6 +29,7 @@ public class PaymentRequestOrchestrator {
             JdbcProviderPaymentStore payments, AsyncSuccessScenarioExecutor asyncSuccess,
             DuplicateWebhookScenarioExecutor duplicateWebhook,
             WebhookRetryScenarioExecutor webhookRetry,
+            InvalidSignatureScenarioExecutor invalidSignature,
             SameKeyRetryScenarioExecutor sameKeyRetry,
             KeyReuseDifferentPayloadScenarioExecutor keyReuseDifferentPayload,
             TimeoutBeforeCommitScenarioExecutor timeoutBeforeCommit,
@@ -38,6 +40,7 @@ public class PaymentRequestOrchestrator {
         this.asyncSuccess = asyncSuccess;
         this.duplicateWebhook = duplicateWebhook;
         this.webhookRetry = webhookRetry;
+        this.invalidSignature = invalidSignature;
         this.sameKeyRetry = sameKeyRetry;
         this.keyReuseDifferentPayload = keyReuseDifferentPayload;
         this.timeoutBeforeCommit = timeoutBeforeCommit;
@@ -57,6 +60,8 @@ public class PaymentRequestOrchestrator {
             case DUPLICATE_WEBHOOK ->
                     new PaymentRequestResult(duplicateWebhook.execute(runId, creation), null);
             case WEBHOOK_RETRY -> new PaymentRequestResult(webhookRetry.execute(runId, creation), null);
+            case INVALID_SIGNATURE ->
+                    new PaymentRequestResult(invalidSignature.execute(runId, creation), null);
             case SAME_KEY_RETRY -> new PaymentRequestResult(sameKeyRetry.execute(runId, creation), null);
             case KEY_REUSE_DIFFERENT_PAYLOAD ->
                     new PaymentRequestResult(keyReuseDifferentPayload.execute(runId, creation), null);

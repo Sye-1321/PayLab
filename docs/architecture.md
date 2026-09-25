@@ -154,6 +154,12 @@ open during the retry delay. Claim-token checks prevent a stale worker from reco
 lease, although a crash after an HTTP send and before result persistence can necessarily cause more
 wire deliveries than the configured policy.
 
+The delivery row also persists `signature_mode`. Existing scheduling APIs select `VALID`;
+`INVALID_SIGNATURE` explicitly selects `INVALID` with one target delivery and no failure retries.
+The first event-insert winner fixes all delivery policy, and replay returns the existing immutable
+event without rewriting an attempted or terminal delivery. Workers use the claimed policy directly
+rather than querying the run scenario.
+
 This design keeps the v0.1 consistency model in one transactional store. A message broker can be introduced later if independent consumers or measured throughput justify it.
 
 ## Test-run association

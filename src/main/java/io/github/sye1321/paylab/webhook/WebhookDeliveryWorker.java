@@ -45,7 +45,7 @@ public class WebhookDeliveryWorker {
                 .header("Content-Type", "application/json")
                 .header("PayLab-Event-Id", claim.eventId().toString())
                 .header("PayLab-Timestamp", Long.toString(timestamp))
-                .header("PayLab-Signature", signer.sign(timestamp, claim.payload()))
+                .header("PayLab-Signature", signature(timestamp, claim))
                 .POST(HttpRequest.BodyPublishers.ofByteArray(claim.payload()))
                 .build();
         try {
@@ -59,5 +59,14 @@ public class WebhookDeliveryWorker {
             Thread.currentThread().interrupt();
             store.recordResult(claim, attemptedAt, null, DeliveryOutcome.NETWORK_ERROR);
         }
+    }
+
+    private String signature(long timestamp, ClaimedDelivery claim) {
+        String valid = signer.sign(timestamp, claim.payload());
+        if (claim.signatureMode() == SignatureMode.VALID) {
+            return valid;
+        }
+        char replacement = valid.charAt(0) == '0' ? '1' : '0';
+        return replacement + valid.substring(1);
     }
 }

@@ -103,6 +103,7 @@ class WebhookDeliveryTests {
         assertEquals(0, acknowledgedDeliveryCount(event.eventId()));
         assertEquals(0, failureCount(event.eventId()));
         assertEquals(1, targetDeliveryCount(event.eventId()));
+        assertEquals("VALID", signatureMode(event.eventId()));
         assertEquals(RunEventType.WEBHOOK_SCHEDULED,
                 runEvents.findByRun(runId).getLast().eventType());
     }
@@ -145,6 +146,45 @@ class WebhookDeliveryTests {
             assertTrue(events.stream().anyMatch(value -> value.eventType() == RunEventType.WEBHOOK_RESPONSE_OBSERVED
                     && value.httpStatus() == 204));
             assertTrue(events.stream().anyMatch(value -> value.eventType() == RunEventType.WEBHOOK_DELIVERED));
+        }
+    }
+
+    @Test
+    void invalidSignatureDeliveryPreservesEventAndBodyAndStopsAfterRejection() throws Exception {
+        Received received = new Received();
+        try (Receiver receiver = new Receiver(401, received)) {
+            TestRunId runId = runs.create(ScenarioId.INVALID_SIGNATURE, receiver.url()).runId();
+            Payment payment = payments.createOrResolve(runId,
+                    new IdempotencyKey(UUID.randomUUID().toString()), intent()).payment();
+            payments.startProcessing(payment.id());
+            payments.markSucceeded(payment.id());
+            WebhookEvent event = scheduler.schedule(runId, payment.id(), 1, 0, SignatureMode.INVALID);
+
+            worker.deliverOneDue();
+
+            assertArrayEquals(event.payload(), received.body.get());
+            assertEquals(event.eventId().toString(), received.eventId.get());
+            String valid = signer.sign(Long.parseLong(received.timestamp.get()), received.body.get());
+            assertFalse(valid.equals(received.signature.get()));
+            assertTrue(received.signature.get().matches("[0-9a-f]{64}"));
+            assertEquals("FAILED", deliveryStatus(event.eventId()));
+            assertEquals(1, attemptCount(event.eventId()));
+            assertEquals(0, acknowledgedDeliveryCount(event.eventId()));
+            assertEquals(1, failureCount(event.eventId()));
+            assertEquals(0, maxFailureRetries(event.eventId()));
+            assertEquals("INVALID", signatureMode(event.eventId()));
+            assertEquals(1, deliveryAttemptRows(event.eventId()));
+            assertEquals("NON_2XX", attemptOutcome(event.eventId()));
+            assertEquals(401, lastHttpStatus(event.eventId()));
+            var evidence = runEvents.findByRun(runId);
+            assertTrue(evidence.stream().anyMatch(value ->
+                    value.eventType() == RunEventType.WEBHOOK_RESPONSE_OBSERVED
+                            && value.httpStatus() == 401 && "NON_2XX".equals(value.outcome())));
+            assertFalse(evidence.stream().anyMatch(value -> value.eventType() == RunEventType.WEBHOOK_DELIVERED));
+
+            worker.deliverOneDue();
+            assertEquals(1, received.requestCount.get());
+            assertEquals(1, deliveryAttemptRows(event.eventId()));
         }
     }
 
@@ -195,6 +235,10 @@ class WebhookDeliveryTests {
             assertEquals(receiver.requests.get(0).eventId(), receiver.requests.get(1).eventId());
             assertArrayEquals(event.payload(), receiver.requests.get(0).body());
             assertArrayEquals(receiver.requests.get(0).body(), receiver.requests.get(1).body());
+            assertEquals(signer.sign(Long.parseLong(receiver.requests.get(0).timestamp()),
+                    receiver.requests.get(0).body()), receiver.requests.get(0).signature());
+            assertEquals(signer.sign(Long.parseLong(receiver.requests.get(1).timestamp()),
+                    receiver.requests.get(1).body()), receiver.requests.get(1).signature());
             assertEquals("DELIVERED", deliveryStatus(event.eventId()));
             assertEquals(2, attemptCount(event.eventId()));
             assertEquals(1, acknowledgedDeliveryCount(event.eventId()));
@@ -391,6 +435,16 @@ class WebhookDeliveryTests {
                 Integer.class, id);
     }
 
+    private int maxFailureRetries(UUID id) {
+        return jdbc.queryForObject("SELECT max_failure_retries FROM webhook_deliveries WHERE event_id = ?",
+                Integer.class, id);
+    }
+
+    private String signatureMode(UUID id) {
+        return jdbc.queryForObject("SELECT signature_mode FROM webhook_deliveries WHERE event_id = ?",
+                String.class, id);
+    }
+
     private int acknowledgedDeliveryCount(UUID id) {
         return jdbc.queryForObject(
                 "SELECT acknowledged_delivery_count FROM webhook_deliveries WHERE event_id = ?",
@@ -459,6 +513,7 @@ class WebhookDeliveryTests {
         final AtomicReference<String> eventId = new AtomicReference<>();
         final AtomicReference<String> timestamp = new AtomicReference<>();
         final AtomicReference<String> signature = new AtomicReference<>();
+        final AtomicInteger requestCount = new AtomicInteger();
     }
 
     private static final class Receiver implements AutoCloseable {
@@ -467,6 +522,7 @@ class WebhookDeliveryTests {
         Receiver(int status, Received received) throws IOException {
             server = HttpServer.create(new InetSocketAddress("localhost", 0), 0);
             server.createContext("/webhooks/paylab", exchange -> {
+                received.requestCount.incrementAndGet();
                 received.body.set(exchange.getRequestBody().readAllBytes());
                 received.eventId.set(exchange.getRequestHeaders().getFirst("PayLab-Event-Id"));
                 received.timestamp.set(exchange.getRequestHeaders().getFirst("PayLab-Timestamp"));

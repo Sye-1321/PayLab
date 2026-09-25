@@ -44,6 +44,11 @@ public class JdbcWebhookStore {
     }
 
     public boolean insertEventAndDelivery(WebhookEvent event, int targetDeliveryCount, int maxFailureRetries) {
+        return insertEventAndDelivery(event, targetDeliveryCount, maxFailureRetries, SignatureMode.VALID);
+    }
+
+    public boolean insertEventAndDelivery(WebhookEvent event, int targetDeliveryCount, int maxFailureRetries,
+            SignatureMode signatureMode) {
         int inserted = jdbc.update("""
                 INSERT INTO webhook_events (event_id, run_id, payment_id, event_type, payload, created_at)
                 VALUES (?, ?, ?, ?, ?, ?)
@@ -55,9 +60,10 @@ public class JdbcWebhookStore {
         }
         jdbc.update("""
                 INSERT INTO webhook_deliveries
-                    (event_id, status, due_at, target_delivery_count, max_failure_retries)
-                VALUES (?, 'PENDING', ?, ?, ?)
-                """, event.eventId(), Timestamp.from(event.createdAt()), targetDeliveryCount, maxFailureRetries);
+                    (event_id, status, due_at, target_delivery_count, max_failure_retries, signature_mode)
+                VALUES (?, 'PENDING', ?, ?, ?, ?)
+                """, event.eventId(), Timestamp.from(event.createdAt()), targetDeliveryCount, maxFailureRetries,
+                signatureMode.name());
         return true;
     }
 
@@ -78,8 +84,9 @@ public class JdbcWebhookStore {
                     FROM candidate c WHERE d.event_id = c.event_id
                     RETURNING d.event_id, d.claim_token
                 )
-                SELECT e.event_id, e.run_id, e.payload, t.webhook_url, c.claim_token
+                SELECT e.event_id, e.run_id, e.payload, t.webhook_url, c.claim_token, d.signature_mode
                 FROM claimed c
+                JOIN webhook_deliveries d ON d.event_id = c.event_id
                 JOIN webhook_events e ON e.event_id = c.event_id
                 JOIN test_runs t ON t.run_id = e.run_id
                 """, JdbcWebhookStore::readClaim, claimSeconds).stream().findFirst());
@@ -150,7 +157,8 @@ public class JdbcWebhookStore {
     private static ClaimedDelivery readClaim(ResultSet rs, int rowNum) throws SQLException {
         return new ClaimedDelivery(rs.getObject("event_id", UUID.class),
                 new TestRunId(rs.getObject("run_id", UUID.class)), rs.getBytes("payload"),
-                rs.getString("webhook_url"), rs.getObject("claim_token", UUID.class));
+                rs.getString("webhook_url"), rs.getObject("claim_token", UUID.class),
+                SignatureMode.valueOf(rs.getString("signature_mode")));
     }
 
     private static WebhookEvent readEvent(ResultSet rs, int rowNum) throws SQLException {
@@ -162,7 +170,7 @@ public class JdbcWebhookStore {
     }
 
     public record ClaimedDelivery(UUID eventId, TestRunId runId, byte[] payload,
-            String webhookUrl, UUID claimToken) {
+            String webhookUrl, UUID claimToken, SignatureMode signatureMode) {
     }
 
     public enum DeliveryOutcome {
