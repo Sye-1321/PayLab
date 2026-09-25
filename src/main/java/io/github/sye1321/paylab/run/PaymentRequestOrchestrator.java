@@ -21,6 +21,7 @@ public class PaymentRequestOrchestrator {
     private final WebhookRetryScenarioExecutor webhookRetry;
     private final InvalidSignatureScenarioExecutor invalidSignature;
     private final OutOfOrderWebhookScenarioExecutor outOfOrderWebhook;
+    private final ConcurrentDuplicateCreateScenarioExecutor concurrentDuplicateCreate;
     private final SameKeyRetryScenarioExecutor sameKeyRetry;
     private final KeyReuseDifferentPayloadScenarioExecutor keyReuseDifferentPayload;
     private final TimeoutBeforeCommitScenarioExecutor timeoutBeforeCommit;
@@ -32,6 +33,7 @@ public class PaymentRequestOrchestrator {
             WebhookRetryScenarioExecutor webhookRetry,
             InvalidSignatureScenarioExecutor invalidSignature,
             OutOfOrderWebhookScenarioExecutor outOfOrderWebhook,
+            ConcurrentDuplicateCreateScenarioExecutor concurrentDuplicateCreate,
             SameKeyRetryScenarioExecutor sameKeyRetry,
             KeyReuseDifferentPayloadScenarioExecutor keyReuseDifferentPayload,
             TimeoutBeforeCommitScenarioExecutor timeoutBeforeCommit,
@@ -44,6 +46,7 @@ public class PaymentRequestOrchestrator {
         this.webhookRetry = webhookRetry;
         this.invalidSignature = invalidSignature;
         this.outOfOrderWebhook = outOfOrderWebhook;
+        this.concurrentDuplicateCreate = concurrentDuplicateCreate;
         this.sameKeyRetry = sameKeyRetry;
         this.keyReuseDifferentPayload = keyReuseDifferentPayload;
         this.timeoutBeforeCommit = timeoutBeforeCommit;
@@ -55,6 +58,9 @@ public class PaymentRequestOrchestrator {
         events.appendMerchantRequestObserved(runId, key, intent.fingerprint());
         if (run.scenario() == ScenarioId.TIMEOUT_BEFORE_COMMIT) {
             return timeoutBeforeCommit.execute(run, key, intent);
+        }
+        if (run.scenario() == ScenarioId.CONCURRENT_DUPLICATE_CREATE) {
+            return new PaymentRequestResult(concurrentDuplicateCreate.execute(runId, key, intent), null);
         }
         PaymentCreationResult creation = payments.createOrResolve(runId, key, intent);
         events.appendPaymentRequestResolved(runId, key, intent.fingerprint(), creation.payment().id());
@@ -72,6 +78,7 @@ public class PaymentRequestOrchestrator {
                     new PaymentRequestResult(keyReuseDifferentPayload.execute(runId, creation), null);
             case TIMEOUT_AFTER_COMMIT -> timeoutAfterCommit.execute(run, creation);
             case TIMEOUT_BEFORE_COMMIT -> throw new IllegalStateException("Scenario was already handled");
+            case CONCURRENT_DUPLICATE_CREATE -> throw new IllegalStateException("Scenario was already handled");
         };
     }
 

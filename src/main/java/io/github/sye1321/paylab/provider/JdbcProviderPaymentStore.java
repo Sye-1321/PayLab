@@ -44,6 +44,16 @@ public class JdbcProviderPaymentStore {
                 """, JdbcProviderPaymentStore::readPayment, id.value(), runId.value()).stream().findFirst();
     }
 
+    public boolean existsByRunAndIdempotencyKey(TestRunId runId, IdempotencyKey key) {
+        Objects.requireNonNull(runId, "runId");
+        Objects.requireNonNull(key, "key");
+        return Boolean.TRUE.equals(jdbc.queryForObject("""
+                SELECT EXISTS (
+                    SELECT 1 FROM provider_payments WHERE run_id = ? AND idempotency_key = ?
+                )
+                """, Boolean.class, runId.value(), key.value()));
+    }
+
     public Optional<Payment> findById(PaymentId id) {
         Objects.requireNonNull(id, "id");
         return jdbc.query("""

@@ -135,6 +135,13 @@ The database is authoritative for this guarantee. In-memory locks may be used as
 
 Concurrency tests run against PostgreSQL.
 
+`CONCURRENT_DUPLICATE_CREATE` uses a bounded, process-local rendezvous keyed by test run and
+idempotency key. The first two real HTTP requests are released together immediately before the
+unchanged `createOrResolve` path, whose independent PostgreSQL transactions and unique constraint
+remain the race authority. Once provider state exists, later replays bypass the rendezvous but still
+call `createOrResolve` for fingerprint validation. Both initial participants must reach the same
+PayLab application instance.
+
 ## Durable webhook delivery
 
 Webhook delivery is durable work stored in PostgreSQL.

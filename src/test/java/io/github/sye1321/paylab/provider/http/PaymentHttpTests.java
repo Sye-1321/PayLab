@@ -682,7 +682,12 @@ class PaymentHttpTests {
     }
 
     @Test
-    void concurrentEquivalentRequestsConvergeOnOneSucceededPaymentAndWebhook() throws Exception {
+    void concurrentDuplicateCreateForcesPostgresRaceAndLaterReplayDoesNotWaitForAnotherPeer() throws Exception {
+        HttpResponse<String> run = postRun("""
+                {"scenario":"CONCURRENT_DUPLICATE_CREATE"}
+                """);
+        assertEquals(201, run.statusCode());
+        runId = JSON.readTree(run.body()).get("runId").asText();
         String key = UUID.randomUUID().toString();
         CountDownLatch ready = new CountDownLatch(2);
         CountDownLatch start = new CountDownLatch(1);
@@ -710,10 +715,10 @@ class PaymentHttpTests {
             assertEquals("SUCCEEDED", firstBody.get("status").asText());
             assertEquals("SUCCEEDED", secondBody.get("status").asText());
             assertEquals(1L, count("provider_payments"));
-            assertEquals(1L, count("webhook_events"));
-            assertEquals(1L, count("webhook_deliveries"));
             JsonNode events = getEvents();
+            assertEquals(2, eventCount(events, "MERCHANT_REQUEST_OBSERVED"));
             assertEquals(2, eventCount(events, "PAYMENT_REQUEST_RESOLVED"));
+            assertEquals(1, eventCount(events, "PAYMENT_COMMITTED"));
             JsonNode firstResolved = event(events, "PAYMENT_REQUEST_RESOLVED", 0);
             JsonNode secondResolved = event(events, "PAYMENT_REQUEST_RESOLVED", 1);
             assertEquals(key, firstResolved.get("idempotencyKey").asText());
@@ -722,7 +727,16 @@ class PaymentHttpTests {
                     secondResolved.get("requestFingerprint").asText());
             assertEquals(firstBody.get("paymentId").asText(), firstResolved.get("paymentId").asText());
             assertEquals(firstResolved.get("paymentId").asText(), secondResolved.get("paymentId").asText());
-            assertFalse(firstResolved.get("eventId").asLong() == secondResolved.get("eventId").asLong());
+
+            HttpResponse<String> replay = post(key, VALID_BODY, Duration.ofSeconds(2));
+            assertEquals(200, replay.statusCode());
+            assertEquals(firstBody.get("paymentId").asText(),
+                    JSON.readTree(replay.body()).get("paymentId").asText());
+            assertEquals("SUCCEEDED", JSON.readTree(replay.body()).get("status").asText());
+            assertEquals(1L, count("provider_payments"));
+            assertEquals(1, runEventCount("PAYMENT_COMMITTED"));
+            assertEquals(3, runEventCount("MERCHANT_REQUEST_OBSERVED"));
+            assertEquals(3, runEventCount("PAYMENT_REQUEST_RESOLVED"));
         } finally {
             start.countDown();
             executor.shutdownNow();
@@ -1043,6 +1057,15 @@ class PaymentHttpTests {
                 """).statusCode());
         assertEquals(400, postRun("""
                 {"scenario":"KEY_REUSE_DIFFERENT_PAYLOAD","responseDelayMillis":10}
+                """).statusCode());
+        assertEquals(201, postRun("""
+                {"scenario":"CONCURRENT_DUPLICATE_CREATE"}
+                """).statusCode());
+        assertEquals(400, postRun("""
+                {"scenario":"CONCURRENT_DUPLICATE_CREATE","webhookUrl":"http://localhost/webhook"}
+                """).statusCode());
+        assertEquals(400, postRun("""
+                {"scenario":"CONCURRENT_DUPLICATE_CREATE","responseDelayMillis":10}
                 """).statusCode());
     }
 

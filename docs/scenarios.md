@@ -275,11 +275,23 @@ side effects. No conformance evaluator is implemented for this scenario.
 
 **Purpose:** verify idempotency under a real request race.
 
-**Provider behavior:** release multiple equivalent create requests concurrently with the same idempotency key.
+**Configuration:** no callback URL or response delay is accepted.
 
-**Expected result:** exactly one logical payment exists and successful callers resolve to that same operation.
+**Provider behavior:** two real HTTP create requests with the same run and idempotency key enter
+PayLab on separate request threads. PayLab briefly holds the first request before provider creation.
+When the second participant arrives, both are released into
+`JdbcProviderPaymentStore.createOrResolve` concurrently, where each uses an independent PostgreSQL
+transaction. This rendezvous guarantees an actual provider-side create race rather than relying on
+requests happening to overlap because they were sent close together.
 
-The concurrency test must run against PostgreSQL rather than an in-memory database because database uniqueness and locking are part of the behavior under test.
+**Expected result:** PostgreSQL uniqueness permits one logical payment, both successful callers
+resolve to the same payment, and provider truth converges to `SUCCEEDED`. A later same-key replay
+detects the existing payment and does not wait for another race participant, while still using
+`createOrResolve` as the authoritative idempotency and fingerprint check.
+
+The concurrency test must run against PostgreSQL rather than an in-memory database because database
+uniqueness and transaction behavior are part of the scenario. The v0.1 rendezvous is process-local,
+so both initial race participants must reach the same PayLab application instance.
 
 **Relevant invariant:** INV-04.
 

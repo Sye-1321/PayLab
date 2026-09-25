@@ -171,6 +171,12 @@ valid signatures. Authenticity does not imply freshness or semantic applicabilit
 evaluator or merchant probe exists yet because acknowledging both callbacks cannot prove that the
 merchant kept monotonic state.
 
+`CONCURRENT_DUPLICATE_CREATE` accepts no webhook URL or response delay. Its first two real same-run,
+same-key HTTP requests rendezvous immediately before the unchanged PostgreSQL `createOrResolve`
+operation, then race in independent transactions. PostgreSQL uniqueness produces one payment and
+both callers converge on its `SUCCEEDED` state. The rendezvous is process-local, so both participants
+must reach the same PayLab instance.
+
 `TIMEOUT_BEFORE_COMMIT` runs require `responseDelayMillis` from 1 through 30,000 and no webhook URL.
 The first create request is recorded, atomically claims the run's one-shot pre-commit fault, and
 records `PRE_COMMIT_TIMEOUT_INJECTED` without creating a provider payment. PayLab then delays the HTTP

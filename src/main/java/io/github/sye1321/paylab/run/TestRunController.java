@@ -65,7 +65,7 @@ public class TestRunController {
                 webhookUrl = null;
                 responseDelayMillis = request.responseDelayMillis();
             }
-            case SAME_KEY_RETRY, KEY_REUSE_DIFFERENT_PAYLOAD -> {
+            case SAME_KEY_RETRY, KEY_REUSE_DIFFERENT_PAYLOAD, CONCURRENT_DUPLICATE_CREATE -> {
                 if (request.webhookUrl() != null || request.responseDelayMillis() != null) {
                     throw new IllegalArgumentException("Invalid idempotency scenario configuration");
                 }

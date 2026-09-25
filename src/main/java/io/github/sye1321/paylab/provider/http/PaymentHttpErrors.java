@@ -3,6 +3,7 @@ package io.github.sye1321.paylab.provider.http;
 import io.github.sye1321.paylab.provider.IdempotencyConflictException;
 import io.github.sye1321.paylab.provider.PaymentNotFoundException;
 import io.github.sye1321.paylab.run.PreCommitFailureException;
+import io.github.sye1321.paylab.run.ConcurrentCreateExecutionException;
 import io.github.sye1321.paylab.run.ResponseDelayApplier;
 import io.github.sye1321.paylab.run.TestRunNotFoundException;
 import org.springframework.http.HttpStatus;
@@ -29,6 +30,13 @@ public class PaymentHttpErrors {
         responseDelays.delay(failure.responseDelayMillis());
         return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE)
                 .body(new ApiError("PRE_COMMIT_FAILURE", "Payment creation failed before provider commit"));
+    }
+
+    @ExceptionHandler(ConcurrentCreateExecutionException.class)
+    ResponseEntity<ApiError> concurrentCreateUnavailable() {
+        return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE)
+                .body(new ApiError("CONCURRENT_CREATE_UNAVAILABLE",
+                        "Concurrent create peer did not arrive"));
     }
 
     @ExceptionHandler(IdempotencyConflictException.class)
