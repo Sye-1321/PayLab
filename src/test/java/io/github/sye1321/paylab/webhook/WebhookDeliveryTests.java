@@ -19,9 +19,11 @@ import io.github.sye1321.paylab.provider.JdbcProviderPaymentStore;
 import io.github.sye1321.paylab.provider.MerchantReference;
 import io.github.sye1321.paylab.provider.Money;
 import io.github.sye1321.paylab.provider.Payment;
+import io.github.sye1321.paylab.provider.PaymentCreationResult;
 import io.github.sye1321.paylab.provider.PaymentIntent;
 import io.github.sye1321.paylab.run.JdbcRunEventStore;
 import io.github.sye1321.paylab.run.JdbcTestRunStore;
+import io.github.sye1321.paylab.run.OutOfOrderWebhookScenarioExecutor;
 import io.github.sye1321.paylab.run.RunEventType;
 import io.github.sye1321.paylab.run.ScenarioId;
 import io.github.sye1321.paylab.run.TestRunId;
@@ -40,6 +42,7 @@ import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -62,6 +65,7 @@ class WebhookDeliveryTests {
     @Autowired JdbcTestRunStore runs;
     @Autowired JdbcProviderPaymentStore payments;
     @Autowired SuccessfulPaymentWebhookScheduler scheduler;
+    @Autowired OutOfOrderWebhookScenarioExecutor outOfOrderWebhook;
     @Autowired JdbcWebhookStore webhooks;
     @Autowired JdbcRunEventStore runEvents;
     @Autowired WebhookDeliveryWorker worker;
@@ -72,6 +76,75 @@ class WebhookDeliveryTests {
     @BeforeEach
     void cleanDatabase() {
         jdbc.execute("TRUNCATE test_runs CASCADE");
+    }
+
+    @Test
+    void outOfOrderScenarioDeliversNewerSucceededBeforeOlderProcessingWithValidImmutablePayloads()
+            throws Exception {
+        try (DuplicateReceiver receiver = new DuplicateReceiver()) {
+            TestRunId runId = runs.create(ScenarioId.OUT_OF_ORDER_WEBHOOK, receiver.url()).runId();
+            Payment created = payments.createOrResolve(runId,
+                    new IdempotencyKey(UUID.randomUUID().toString()), intent()).payment();
+
+            Payment succeeded = outOfOrderWebhook.execute(runId, new PaymentCreationResult(created, true));
+
+            assertEquals("SUCCEEDED", succeeded.status().name());
+            assertEquals(2, count("webhook_events"));
+            assertEquals(2, count("webhook_deliveries"));
+            List<WebhookEvent> events = jdbc.query("""
+                    SELECT event_id, run_id, payment_id, event_type, payload, created_at
+                    FROM webhook_events WHERE run_id = ? ORDER BY created_at
+                    """, (rs, rowNum) -> new WebhookEvent(rs.getObject("event_id", UUID.class), runId,
+                            new io.github.sye1321.paylab.provider.PaymentId(rs.getString("payment_id")),
+                            WebhookEventType.valueOf(rs.getString("event_type")), rs.getBytes("payload"),
+                            rs.getTimestamp("created_at").toInstant()), runId.value());
+            WebhookEvent processing = events.get(0);
+            WebhookEvent successful = events.get(1);
+            assertEquals(WebhookEventType.PAYMENT_PROCESSING, processing.type());
+            assertEquals(WebhookEventType.PAYMENT_SUCCEEDED, successful.type());
+            assertNotEquals(processing.eventId(), successful.eventId());
+            assertTrue(processing.createdAt().isBefore(successful.createdAt()));
+            assertTrue(jdbc.queryForObject("SELECT due_at FROM webhook_deliveries WHERE event_id = ?",
+                    java.sql.Timestamp.class, successful.eventId()).before(
+                            jdbc.queryForObject("SELECT due_at FROM webhook_deliveries WHERE event_id = ?",
+                                    java.sql.Timestamp.class, processing.eventId())));
+            JsonNode processingBody = json.readTree(processing.payload());
+            JsonNode successfulBody = json.readTree(successful.payload());
+            assertEquals("PROCESSING", processingBody.get("data").get("status").asText());
+            assertEquals("SUCCEEDED", successfulBody.get("data").get("status").asText());
+            assertEquals(processing.paymentId().value(), successful.paymentId().value());
+            assertEquals(processingBody.get("data").get("amountMinor").asLong(),
+                    successfulBody.get("data").get("amountMinor").asLong());
+            assertEquals(processingBody.get("data").get("currency").asText(),
+                    successfulBody.get("data").get("currency").asText());
+            assertEquals(processingBody.get("data").get("merchantReference").asText(),
+                    successfulBody.get("data").get("merchantReference").asText());
+
+            worker.deliverOneDue();
+            makeDue(processing.eventId());
+            worker.deliverOneDue();
+
+            assertEquals(2, receiver.requests.size());
+            ReceivedRequest first = receiver.requests.get(0);
+            ReceivedRequest second = receiver.requests.get(1);
+            assertEquals(successful.eventId().toString(), first.eventId());
+            assertEquals(processing.eventId().toString(), second.eventId());
+            assertArrayEquals(successful.payload(), first.body());
+            assertArrayEquals(processing.payload(), second.body());
+            assertEquals(signer.sign(Long.parseLong(first.timestamp()), first.body()), first.signature());
+            assertEquals(signer.sign(Long.parseLong(second.timestamp()), second.body()), second.signature());
+            assertDeliveryState(successful.eventId(), "DELIVERED", 1, 1, 0);
+            assertDeliveryState(processing.eventId(), "DELIVERED", 1, 1, 0);
+            assertEquals("SUCCEEDED", paymentStatus(succeeded.id().value()));
+            assertEquals(1, eventCount(runEvents.findByRun(runId), RunEventType.WEBHOOK_DELIVERED,
+                    successful.eventId()));
+            assertEquals(1, eventCount(runEvents.findByRun(runId), RunEventType.WEBHOOK_DELIVERED,
+                    processing.eventId()));
+            assertEquals(1, eventCount(runEvents.findByRun(runId), RunEventType.WEBHOOK_RESPONSE_OBSERVED,
+                    successful.eventId()));
+            assertEquals(1, eventCount(runEvents.findByRun(runId), RunEventType.WEBHOOK_RESPONSE_OBSERVED,
+                    processing.eventId()));
+        }
     }
 
     @Test

@@ -160,6 +160,11 @@ The first event-insert winner fixes all delivery policy, and replay returns the 
 event without rewriting an attempted or terminal delivery. Workers use the claimed policy directly
 rather than querying the run scenario.
 
+`OUT_OF_ORDER_WEBHOOK` persists distinct `PAYMENT_PROCESSING` and `PAYMENT_SUCCEEDED` snapshots with
+logical timestamps in that order, but gives the succeeded delivery the earlier `due_at`. The ordinary
+worker therefore delivers the newer event first without scenario-specific behavior. Both deliveries
+use valid signatures, and the authoritative payment remains `SUCCEEDED`.
+
 This design keeps the v0.1 consistency model in one transactional store. A message broker can be introduced later if independent consumers or measured throughput justify it.
 
 ## Test-run association

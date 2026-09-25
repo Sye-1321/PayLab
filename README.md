@@ -105,7 +105,8 @@ Webhook authenticity, replay/duplication behavior, callback targets, secret hand
 
 ## Webhook contract
 
-`ASYNC_SUCCESS`, `DUPLICATE_WEBHOOK`, `WEBHOOK_RETRY`, and `INVALID_SIGNATURE` test runs require one callback URL, for example:
+`ASYNC_SUCCESS`, `DUPLICATE_WEBHOOK`, `OUT_OF_ORDER_WEBHOOK`, `WEBHOOK_RETRY`, and
+`INVALID_SIGNATURE` test runs require one callback URL, for example:
 
 ```json
 {"scenario":"ASYNC_SUCCESS","webhookUrl":"http://localhost:8081/webhooks/paylab"}
@@ -162,6 +163,13 @@ but persists an invalid-signature delivery policy. Its one attempt carries a str
 64-character lowercase hexadecimal signature that differs from the real HMAC. There is no automatic
 retry. The merchant response is transport evidence only; no conformance evaluator currently claims
 that an HTTP response proves the absence of merchant-internal side effects.
+
+`OUT_OF_ORDER_WEBHOOK` persists an older valid `PAYMENT_PROCESSING` snapshot and a newer valid
+`PAYMENT_SUCCEEDED` snapshot, then uses durable delivery timestamps to send `SUCCEEDED` first and
+the stale `PROCESSING` event second. Provider truth remains `SUCCEEDED`, and both callbacks carry
+valid signatures. Authenticity does not imply freshness or semantic applicability. No conformance
+evaluator or merchant probe exists yet because acknowledging both callbacks cannot prove that the
+merchant kept monotonic state.
 
 `TIMEOUT_BEFORE_COMMIT` runs require `responseDelayMillis` from 1 through 30,000 and no webhook URL.
 The first create request is recorded, atomically claims the run's one-shot pre-commit fault, and

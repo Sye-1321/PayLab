@@ -49,6 +49,12 @@ public class JdbcWebhookStore {
 
     public boolean insertEventAndDelivery(WebhookEvent event, int targetDeliveryCount, int maxFailureRetries,
             SignatureMode signatureMode) {
+        return insertEventAndDelivery(event, targetDeliveryCount, maxFailureRetries, signatureMode,
+                event.createdAt());
+    }
+
+    public boolean insertEventAndDelivery(WebhookEvent event, int targetDeliveryCount, int maxFailureRetries,
+            SignatureMode signatureMode, Instant dueAt) {
         int inserted = jdbc.update("""
                 INSERT INTO webhook_events (event_id, run_id, payment_id, event_type, payload, created_at)
                 VALUES (?, ?, ?, ?, ?, ?)
@@ -62,7 +68,7 @@ public class JdbcWebhookStore {
                 INSERT INTO webhook_deliveries
                     (event_id, status, due_at, target_delivery_count, max_failure_retries, signature_mode)
                 VALUES (?, 'PENDING', ?, ?, ?, ?)
-                """, event.eventId(), Timestamp.from(event.createdAt()), targetDeliveryCount, maxFailureRetries,
+                """, event.eventId(), Timestamp.from(dueAt), targetDeliveryCount, maxFailureRetries,
                 signatureMode.name());
         return true;
     }

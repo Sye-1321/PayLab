@@ -182,6 +182,8 @@ processing therefore cannot be inferred from HTTP acknowledgements.
 
 **Purpose:** test state monotonicity when event delivery order differs from provider-state order.
 
+**Configuration:** a callback URL is required and `responseDelayMillis` is not accepted.
+
 Example provider progression:
 
 ```text
@@ -195,11 +197,23 @@ SUCCEEDED
 PROCESSING   # older event delivered later
 ```
 
+**Provider behavior:** progress one authoritative payment through `CREATED -> PROCESSING -> SUCCEEDED`,
+then persist two independently serialized immutable snapshots. The older `PAYMENT_PROCESSING` event
+has status `PROCESSING`; the newer `PAYMENT_SUCCEEDED` event has status `SUCCEEDED`. Their persisted
+`createdAt` values preserve that logical order, while durable `due_at` values schedule `SUCCEEDED`
+first and the stale `PROCESSING` callback second. Both deliveries use valid signatures and normal
+one-attempt delivery semantics. Provider truth remains `SUCCEEDED` after both callbacks.
+
+The late processing event is authentic but stale. Authenticity does not imply freshness or semantic
+applicability.
+
 **Probe-backed pass condition:** merchant state remains semantically `SUCCEEDED`.
 
 **Probe-backed failure condition:** merchant regresses to `PROCESSING`.
 
-Without merchant-state evidence, the internal-state assertion is `INCONCLUSIVE`.
+No conformance evaluator or merchant probe is implemented for this scenario. HTTP acknowledgement
+of both callbacks proves transport receipt, not that merchant state remained monotonic; without
+merchant-state evidence, the internal-state assertion is `INCONCLUSIVE`.
 
 **Relevant invariants:** INV-07, INV-09.
 

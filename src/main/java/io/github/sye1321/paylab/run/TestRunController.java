@@ -49,7 +49,7 @@ public class TestRunController {
         String webhookUrl;
         Integer responseDelayMillis;
         switch (request.scenario()) {
-            case ASYNC_SUCCESS, DUPLICATE_WEBHOOK, WEBHOOK_RETRY, INVALID_SIGNATURE -> {
+            case ASYNC_SUCCESS, DUPLICATE_WEBHOOK, WEBHOOK_RETRY, INVALID_SIGNATURE, OUT_OF_ORDER_WEBHOOK -> {
                 if (request.webhookUrl() == null || request.webhookUrl().isBlank()
                         || request.responseDelayMillis() != null) {
                     throw new IllegalArgumentException("Invalid webhook scenario configuration");

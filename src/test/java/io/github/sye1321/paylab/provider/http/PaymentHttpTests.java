@@ -232,6 +232,47 @@ class PaymentHttpTests {
     }
 
     @Test
+    void outOfOrderWebhookReplayKeepsOnePaymentAndOneImmutableEventPair() throws Exception {
+        HttpResponse<String> run = postRun("""
+                {"scenario":"OUT_OF_ORDER_WEBHOOK","webhookUrl":"http://localhost:8081/webhooks/paylab"}
+                """);
+        assertEquals(201, run.statusCode());
+        runId = JSON.readTree(run.body()).get("runId").asText();
+        String key = UUID.randomUUID().toString();
+
+        HttpResponse<String> first = post(key, VALID_BODY);
+        var beforeReplay = jdbc.queryForList("""
+                SELECT e.event_id, e.event_type, encode(e.payload, 'hex') AS payload,
+                       d.status, d.due_at::text AS due_at
+                FROM webhook_events e JOIN webhook_deliveries d ON d.event_id = e.event_id
+                WHERE e.run_id = ? ORDER BY e.event_type
+                """, UUID.fromString(runId));
+        HttpResponse<String> replay = post(key, VALID_BODY);
+        var afterReplay = jdbc.queryForList("""
+                SELECT e.event_id, e.event_type, encode(e.payload, 'hex') AS payload,
+                       d.status, d.due_at::text AS due_at
+                FROM webhook_events e JOIN webhook_deliveries d ON d.event_id = e.event_id
+                WHERE e.run_id = ? ORDER BY e.event_type
+                """, UUID.fromString(runId));
+
+        assertEquals(200, first.statusCode());
+        assertEquals(200, replay.statusCode());
+        assertEquals(JSON.readTree(first.body()).get("paymentId").asText(),
+                JSON.readTree(replay.body()).get("paymentId").asText());
+        assertEquals(1L, count("provider_payments"));
+        assertEquals(2L, count("webhook_events"));
+        assertEquals(2L, count("webhook_deliveries"));
+        assertEquals(1, runEventCount("PAYMENT_COMMITTED"));
+        assertEquals(1, jdbc.queryForObject("""
+                SELECT count(*) FROM webhook_events WHERE run_id = ? AND event_type = 'PAYMENT_PROCESSING'
+                """, Integer.class, UUID.fromString(runId)));
+        assertEquals(1, jdbc.queryForObject("""
+                SELECT count(*) FROM webhook_events WHERE run_id = ? AND event_type = 'PAYMENT_SUCCEEDED'
+                """, Integer.class, UUID.fromString(runId)));
+        assertEquals(beforeReplay, afterReplay);
+    }
+
+    @Test
     void equivalentReplayIsScenarioIdempotent() throws Exception {
         String key = UUID.randomUUID().toString();
 
@@ -976,6 +1017,16 @@ class PaymentHttpTests {
                 """).statusCode());
         assertEquals(400, postRun("""
                 {"scenario":"INVALID_SIGNATURE","webhookUrl":"http://localhost/webhook",
+                 "responseDelayMillis":10}
+                """).statusCode());
+        assertEquals(201, postRun("""
+                {"scenario":"OUT_OF_ORDER_WEBHOOK","webhookUrl":"http://localhost:8081/webhooks/paylab"}
+                """).statusCode());
+        assertEquals(400, postRun("""
+                {"scenario":"OUT_OF_ORDER_WEBHOOK"}
+                """).statusCode());
+        assertEquals(400, postRun("""
+                {"scenario":"OUT_OF_ORDER_WEBHOOK","webhookUrl":"http://localhost/webhook",
                  "responseDelayMillis":10}
                 """).statusCode());
         assertEquals(400, postRun("""

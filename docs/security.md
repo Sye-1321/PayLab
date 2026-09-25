@@ -45,7 +45,11 @@ A timestamp freshness policy can bound acceptance of old callbacks. Duplicate de
 
 A validly signed event can still be stale. Authenticity proves who produced the event, not that applying it would be semantically correct.
 
-`OUT_OF_ORDER_WEBHOOK` exercises this distinction.
+`OUT_OF_ORDER_WEBHOOK` now executes this distinction with two validly signed immutable snapshots:
+the newer `PAYMENT_SUCCEEDED` event is delivered before the older `PAYMENT_PROCESSING` event while
+provider truth remains `SUCCEEDED`. Authenticity does not imply freshness or semantic applicability.
+There is no conformance evaluator yet because two HTTP acknowledgements cannot prove that merchant
+state did not regress.
 
 ## Idempotency abuse and races
 
