@@ -1,17 +1,116 @@
 # PayLab
 
-PayLab is a payment resilience conformance lab for backend integrations. It provides a fictional
-payment provider, injects failure conditions that ordinary sandbox happy paths rarely exercise,
-records evidence at the provider boundary, and evaluates that evidence against explicit
-payment-safety rules.
+[![CI](https://github.com/Sye-1321/PayLab/actions/workflows/ci.yml/badge.svg)](https://github.com/Sye-1321/PayLab/actions/workflows/ci.yml)
+[![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 
-The central question is:
+PayLab is a provider-neutral payment resilience lab that deliberately creates the failure conditions
+most payment sandboxes avoid: ambiguous outcomes, unsafe retries, concurrent duplicate requests,
+duplicated or reordered webhooks, callback failures, and invalid signatures.
+
+It acts as a fictional payment provider, records observable evidence at the provider boundary, and
+evaluates only claims that evidence can prove. Supported evaluations produce `PASS`, `FAIL`, or
+`INCONCLUSIVE`. PayLab is not a real gateway, PSP, Stripe clone, production payment processor,
+certification authority, or generic chaos-testing framework.
 
 > What does the backend do when the payment may have succeeded, but the network does not give it a
 > clean answer?
 
-PayLab focuses on server-to-server payment collection with asynchronous webhooks. It does not
-process real money and is not an implementation of any specific payment service provider.
+Java 25 · Spring Boot · PostgreSQL · Flyway · Testcontainers
+
+```mermaid
+flowchart LR
+    Merchant["Merchant integration"] --> Provider["PayLab provider API"]
+    Provider --> Scenario["Scenario + failure injection"]
+    Scenario --> Store["PostgreSQL<br/>provider state + evidence"]
+    Store --> Webhook["Durable signed webhook delivery"]
+    Webhook --> Merchant
+    Store --> Evaluate["Conformance evaluation"]
+    Evaluate --> Verdict["PASS · FAIL · INCONCLUSIVE"]
+```
+
+## What PayLab proves
+
+| Area | What PayLab exercises |
+| --- | --- |
+| Ambiguous outcomes | A payment commits but its HTTP response becomes uncertain |
+| Idempotency | Same-key replay and conflicting key reuse |
+| Concurrency | Real PostgreSQL-backed duplicate-create races |
+| Webhooks | Signed delivery, duplicates, retries, stale ordering, and invalid signatures |
+| Durability | Persisted provider state, events, webhook work, attempts, and leases |
+| Evidence | Observable requests, resolutions, status queries, and webhook delivery |
+| Conformance | Evidence-backed `PASS`, `FAIL`, or `INCONCLUSIVE` where observable evidence is sufficient |
+| CI output | Immutable finalized results exportable as JUnit XML |
+
+PayLab establishes provider-side behavior and facts visible at the provider boundary. It does not
+claim exactly-once delivery, merchant database correctness, merchant-side deduplication, or correct
+merchant-internal state transitions.
+
+## Scenarios
+
+| Scenario | What it exercises |
+| --- | --- |
+| `ASYNC_SUCCESS` | Normal asynchronous payment flow |
+| `TIMEOUT_BEFORE_COMMIT` | Transport failure before provider execution |
+| `TIMEOUT_AFTER_COMMIT` | Ambiguous outcome after provider execution |
+| `SAME_KEY_RETRY` | Idempotent replay |
+| `KEY_REUSE_DIFFERENT_PAYLOAD` | Conflicting reuse of an idempotency key |
+| `DUPLICATE_WEBHOOK` | At-least-once callback delivery |
+| `OUT_OF_ORDER_WEBHOOK` | Stale event delivered after a newer event |
+| `WEBHOOK_RETRY` | Callback failure followed by retry |
+| `INVALID_SIGNATURE` | Rejection of untrusted callback evidence |
+| `CONCURRENT_DUPLICATE_CREATE` | Idempotency under a real request race |
+
+Detailed contracts are in [`docs/scenarios.md`](docs/scenarios.md).
+
+## Evidence boundary
+
+PayLab observes the system from the provider boundary. It can directly observe merchant-to-provider
+requests, idempotency keys, request fingerprints, retries, provider payment resolution, status
+queries, provider-to-merchant webhook attempts, and webhook response status and timing.
+
+It cannot automatically prove whether the merchant deduplicated a webhook internally, verified a
+signature before processing, performed an internal database transition exactly once, ignored a
+stale event internally, or fulfilled downstream work once. PayLab issues a conformance verdict only
+when the available evidence supports one. Missing evidence does not become a pass.
+
+## Conformance
+
+The current automatic evaluators are:
+
+| Scenario | Invariant | Evaluated behavior |
+| --- | --- | --- |
+| `TIMEOUT_AFTER_COMMIT` | `INV-01` | Recovery from an ambiguous committed payment |
+| `SAME_KEY_RETRY` | `INV-02` | Equivalent same-key replay resolves to one payment |
+| `KEY_REUSE_DIFFERENT_PAYLOAD` | `INV-03` | Different intent does not reuse an existing key |
+
+These scenarios have defined conformance assertions that can be evaluated from the evidence PayLab
+currently observes. The remaining scenarios still execute fully and produce evidence, but automatic
+verdicts are limited to behaviors the current evidence model can establish. PayLab does not infer
+merchant-internal correctness from provider-side observations.
+
+- `PASS` means sufficient evidence establishes the required behavior.
+- `FAIL` means sufficient evidence establishes a violation.
+- `INCONCLUSIVE` means the available evidence is insufficient.
+
+See [`docs/invariants.md`](docs/invariants.md) and
+[`docs/conformance.md`](docs/conformance.md) for the rules and evidence model.
+
+## V1 scope
+
+The current V1 scope contains:
+
+- 10 payment resilience scenarios, including a normal asynchronous baseline;
+- provider-side request and event evidence;
+- PostgreSQL-backed idempotency and concurrency behavior;
+- durable signed webhook delivery, retries, duplicate delivery, and stale event ordering;
+- three evidence-backed conformance evaluators with `PASS`, `FAIL`, and `INCONCLUSIVE` semantics;
+- run finalization with immutable persisted conformance snapshots;
+- JSON conformance retrieval and JUnit XML export for finalized runs;
+- a local PostgreSQL quickstart and automated CI against the existing test suite.
+
+V1 does not provide real payment processing or provider compatibility, merchant-side
+instrumentation or internal-state certification, regulatory or PCI certification, production
+deployment infrastructure, a user interface, or generic chaos testing.
 
 ## Getting started
 
@@ -78,56 +177,15 @@ the repository includes the Maven Wrapper. The Compose configuration is for loca
 Stop PostgreSQL while preserving its data with `docker compose down`. To remove the named volume
 and start with a fresh local database, run `docker compose down -v`.
 
-## Why it exists
-
-Happy-path tests do not establish that an integration remains safe when a provider commits a
-payment but the response is lost, concurrent requests race, callbacks fail or arrive more than
-once, events arrive out of order, or an idempotency key is misused. Those conditions can expose
-duplicate financial execution, stale state, unsafe retries, and trust in forged events.
-
-PayLab does not infer merchant-internal side effects from HTTP acknowledgements. Assertions that
-require evidence outside the current provider boundary remain `INCONCLUSIVE`.
-
-## Scenarios
-
-| Scenario | What it exercises |
-| --- | --- |
-| `ASYNC_SUCCESS` | Normal asynchronous payment flow |
-| `TIMEOUT_BEFORE_COMMIT` | Transport failure before provider execution |
-| `TIMEOUT_AFTER_COMMIT` | Ambiguous outcome after provider execution |
-| `SAME_KEY_RETRY` | Idempotent replay |
-| `KEY_REUSE_DIFFERENT_PAYLOAD` | Conflicting reuse of an idempotency key |
-| `DUPLICATE_WEBHOOK` | At-least-once callback delivery |
-| `OUT_OF_ORDER_WEBHOOK` | Stale event delivered after a newer event |
-| `WEBHOOK_RETRY` | Callback failure followed by retry |
-| `INVALID_SIGNATURE` | Rejection of untrusted callback evidence |
-| `CONCURRENT_DUPLICATE_CREATE` | Idempotency under a real request race |
-
-Detailed contracts are in [`docs/scenarios.md`](docs/scenarios.md).
-
-## Verdicts
-
-- `PASS` — sufficient evidence establishes the required behavior.
-- `FAIL` — sufficient evidence establishes a violation.
-- `INCONCLUSIVE` — the available evidence is insufficient.
-
-Missing evidence is not a pass. See [`docs/conformance.md`](docs/conformance.md) for the evidence
-model and the currently supported evaluators.
-
 ## Architecture
 
-PayLab is a modular Java/Spring Boot application backed by PostgreSQL. PostgreSQL is the authority
-for provider payments, idempotency, run evidence, and durable webhook work. Scenario-specific
-executors inject faults without changing the payment model's core safety boundaries. Merchant
-systems are external systems under test.
+PayLab is one modular Java/Spring Boot service. PostgreSQL is the authority for payments, run
+evidence, idempotency, and durable webhook work; Flyway manages its schema and Spring JDBC provides
+data access. Scenario executors inject faults without changing the provider model's core safety
+boundaries, and merchant systems remain external systems under test.
 
-The provider API uses explicit test-run correlation. Run creation, retrieval, events, and supported
-conformance evaluation are exposed over HTTP. `CONCURRENT_DUPLICATE_CREATE` adds a bounded,
-process-local rendezvous before the normal PostgreSQL create operation so two requests exercise a
-real uniqueness race.
-
-See [`docs/architecture.md`](docs/architecture.md) for transaction, persistence, and delivery
-details.
+See [`docs/architecture.md`](docs/architecture.md) for transaction, persistence, concurrency, and
+delivery details.
 
 ## Webhook contract
 
@@ -140,30 +198,25 @@ persisted JSON body with `Content-Type: application/json` and these headers:
   the exact raw request body.
 
 The signing key must be supplied as `paylab.webhook.signing-secret` (environment variable
-`PAYLAB_WEBHOOK_SIGNING_SECRET`); there is no default. Delivery work, attempts, retries, intentional
-duplicates, and event ordering are persisted in PostgreSQL. See [`docs/scenarios.md`](docs/scenarios.md)
-for scenario behavior and [`docs/security.md`](docs/security.md) for trust boundaries.
+`PAYLAB_WEBHOOK_SIGNING_SECRET`); there is no default. Delivery work and attempts are durable in
+PostgreSQL. See [`docs/scenarios.md`](docs/scenarios.md) for delivery behavior and
+[`docs/security.md`](docs/security.md) for trust boundaries.
 
-## Current conformance support
+## Finalization and reporting
 
-`GET /test-runs/{runId}/conformance` currently evaluates:
+- `GET /test-runs/{runId}/conformance` evaluates an open supported run from its current evidence.
+- `POST /test-runs/{runId}/finalize` persists the current `PASS`, `FAIL`, or `INCONCLUSIVE` result as
+  an immutable conformance snapshot.
+- `GET /test-runs/{runId}/report/junit.xml` exports the frozen result of a finalized run as JUnit XML.
 
-- `TIMEOUT_AFTER_COMMIT` against `INV-01`;
-- `SAME_KEY_RETRY` against `INV-02`;
-- `KEY_REUSE_DIFFERENT_PAYLOAD` against `INV-03`.
-
-Open runs are evaluated from their current evidence. A supported run can be finalized with
-`POST /test-runs/{runId}/finalize`; afterward, conformance requests return the persisted immutable
-evaluation snapshot. Other scenarios currently have no conformance evaluator and cannot be finalized.
-Finalized runs can be exported as JUnit XML at `GET /test-runs/{runId}/report/junit.xml` for CI systems
-that ingest test reports.
+Finalized results are not reevaluated from later evidence. Unsupported scenarios remain executable
+but cannot be finalized, because they do not have automatic conformance evaluators.
 
 ## Safety and scope
 
-PayLab is intended for development and test environments. It does not provide regulatory
-certification, PCI compliance, production payment-provider compatibility, or proof about behavior
-outside the scenarios and evidence it evaluates. Real cardholder data, real payment credentials,
-and real customer funds are outside its scope.
+PayLab is for development and test environments and does not process real money. Real cardholder
+data, real payment credentials, and real customer funds are outside its scope. It does not provide
+regulatory certification, PCI compliance, or production-provider compatibility.
 
 ## Documentation
 
@@ -173,3 +226,7 @@ and real customer funds are outside its scope.
 - [`docs/architecture.md`](docs/architecture.md) — current system structure
 - [`docs/security.md`](docs/security.md) — security model and trust boundaries
 - [`docs/adr/`](docs/adr/) — durable architectural decisions
+
+## License
+
+PayLab is licensed under the [Apache License 2.0](LICENSE).
