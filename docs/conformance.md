@@ -97,6 +97,15 @@ references supporting its decision.
 creation and status-query requests are rejected after finalization. Unsupported scenarios return
 `UNSUPPORTED_CONFORMANCE_SCENARIO` and remain open.
 
+## JUnit XML export
+
+JUnit export at `GET /test-runs/{runId}/report/junit.xml` requires a finalized run. Assertions map to
+JUnit testcases as follows:
+
+- `PASS` -> successful testcase
+- `FAIL` -> failure
+- `INCONCLUSIVE` -> skipped
+
 ## Conformance is not certification
 
 A PayLab result describes behavior observed under the scenarios that were run. It is not regulatory

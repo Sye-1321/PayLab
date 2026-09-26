@@ -1,6 +1,7 @@
 package io.github.sye1321.paylab.provider.http;
 
 import java.io.IOException;
+import java.io.StringReader;
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
@@ -15,6 +16,8 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 
+import javax.xml.parsers.DocumentBuilderFactory;
+
 import io.github.sye1321.paylab.provider.MerchantReference;
 import io.github.sye1321.paylab.provider.Money;
 import io.github.sye1321.paylab.provider.PaymentIntent;
@@ -27,6 +30,10 @@ import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
 import org.testcontainers.postgresql.PostgreSQLContainer;
+import org.w3c.dom.Document;
+import org.w3c.dom.Element;
+import org.w3c.dom.NodeList;
+import org.xml.sax.InputSource;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.ObjectMapper;
 
@@ -369,6 +376,12 @@ class PaymentHttpTests {
         JsonNode payment = JSON.readTree(originalPayment.body());
         assertEquals(200, post(key, VALID_BODY).statusCode());
 
+        HttpResponse<String> openReport = junitReport();
+        assertEquals(409, openReport.statusCode());
+        JsonNode openReportError = JSON.readTree(openReport.body());
+        assertEquals("TEST_RUN_NOT_FINALIZED", openReportError.get("code").asText());
+        assertEquals("Test run is not finalized", openReportError.get("message").asText());
+
         JsonNode live = conformance();
         assertEquals("PASS", live.get("verdict").asText());
 
@@ -376,6 +389,26 @@ class PaymentHttpTests {
         assertEquals(200, finalizedResponse.statusCode());
         JsonNode finalized = JSON.readTree(finalizedResponse.body());
         assertEquals(live, finalized);
+
+        HttpResponse<String> reportResponse = junitReport();
+        assertEquals(200, reportResponse.statusCode());
+        assertTrue(reportResponse.headers().firstValue("Content-Type").orElseThrow()
+                .startsWith("application/xml"));
+        Document report = parseXml(reportResponse.body());
+        Element suite = report.getDocumentElement();
+        assertEquals("testsuite", suite.getTagName());
+        assertEquals("PayLab.SAME_KEY_RETRY", suite.getAttribute("name"));
+        assertEquals("1", suite.getAttribute("tests"));
+        assertEquals("0", suite.getAttribute("failures"));
+        assertEquals("0", suite.getAttribute("errors"));
+        assertEquals("0", suite.getAttribute("skipped"));
+        NodeList properties = suite.getElementsByTagName("property");
+        assertEquals(runId, propertyValue(properties, "paylab.runId"));
+        assertEquals("SAME_KEY_RETRY", propertyValue(properties, "paylab.scenario"));
+        assertEquals("1", propertyValue(properties, "paylab.scenarioVersion"));
+        assertEquals("PASS", propertyValue(properties, "paylab.verdict"));
+        Element testcase = (Element) suite.getElementsByTagName("testcase").item(0);
+        assertEquals("IDEMPOTENT_REPLAY", testcase.getAttribute("name"));
 
         HttpRequest runRequest = HttpRequest.newBuilder(
                 URI.create("http://localhost:" + port + "/test-runs/" + runId)).GET().build();
@@ -1332,6 +1365,31 @@ class PaymentHttpTests {
                 URI.create("http://localhost:" + port + "/test-runs/" + runId + "/finalize"))
                 .POST(HttpRequest.BodyPublishers.noBody()).build();
         return HTTP.send(request, HttpResponse.BodyHandlers.ofString());
+    }
+
+    private HttpResponse<String> junitReport() throws IOException, InterruptedException {
+        HttpRequest request = HttpRequest.newBuilder(
+                URI.create("http://localhost:" + port + "/test-runs/" + runId + "/report/junit.xml"))
+                .GET().build();
+        return HTTP.send(request, HttpResponse.BodyHandlers.ofString());
+    }
+
+    private static Document parseXml(String xml) throws Exception {
+        DocumentBuilderFactory factory = DocumentBuilderFactory.newInstance();
+        factory.setFeature("http://apache.org/xml/features/disallow-doctype-decl", true);
+        factory.setFeature("http://xml.org/sax/features/external-general-entities", false);
+        factory.setFeature("http://xml.org/sax/features/external-parameter-entities", false);
+        return factory.newDocumentBuilder().parse(new InputSource(new StringReader(xml)));
+    }
+
+    private static String propertyValue(NodeList properties, String name) {
+        for (int index = 0; index < properties.getLength(); index++) {
+            Element property = (Element) properties.item(index);
+            if (name.equals(property.getAttribute("name"))) {
+                return property.getAttribute("value");
+            }
+        }
+        throw new AssertionError("Missing property: " + name);
     }
 
     private void appendObserved(String key, String fingerprint) {

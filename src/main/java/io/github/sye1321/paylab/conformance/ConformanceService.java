@@ -3,6 +3,7 @@ package io.github.sye1321.paylab.conformance;
 import io.github.sye1321.paylab.run.JdbcTestRunStore;
 import io.github.sye1321.paylab.run.TestRun;
 import io.github.sye1321.paylab.run.TestRunId;
+import io.github.sye1321.paylab.run.TestRunNotFinalizedException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -32,6 +33,14 @@ public class ConformanceService {
             return requireFinalizedResult(run);
         }
         return evaluateLive(run);
+    }
+
+    public ConformanceEvaluation requireFinalized(TestRunId runId) {
+        TestRun run = runs.require(runId);
+        if (run.finalizedAt() == null) {
+            throw new TestRunNotFinalizedException(runId);
+        }
+        return requireFinalizedResult(run);
     }
 
     @Transactional

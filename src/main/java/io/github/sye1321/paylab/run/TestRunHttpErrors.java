@@ -16,6 +16,12 @@ public class TestRunHttpErrors {
         return ResponseEntity.status(404).body(new ApiError("TEST_RUN_NOT_FOUND", "Test run not found"));
     }
 
+    @ExceptionHandler(TestRunNotFinalizedException.class)
+    ResponseEntity<ApiError> notFinalized() {
+        return ResponseEntity.status(409)
+                .body(new ApiError("TEST_RUN_NOT_FINALIZED", "Test run is not finalized"));
+    }
+
     @ExceptionHandler(UnsupportedConformanceScenarioException.class)
     ResponseEntity<ApiError> unsupportedConformanceScenario() {
         return ResponseEntity.badRequest().body(new ApiError(

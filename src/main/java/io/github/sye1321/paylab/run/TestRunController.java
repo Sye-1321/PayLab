@@ -6,9 +6,11 @@ import java.util.UUID;
 
 import io.github.sye1321.paylab.conformance.ConformanceEvaluation;
 import io.github.sye1321.paylab.conformance.ConformanceService;
+import io.github.sye1321.paylab.conformance.JUnitXmlReportRenderer;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.NotNull;
 import org.springframework.http.HttpStatus;
+import org.springframework.http.MediaType;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -25,13 +27,15 @@ public class TestRunController {
     private final JdbcRunEventStore events;
     private final WebhookUrlValidator webhookUrls;
     private final ConformanceService conformance;
+    private final JUnitXmlReportRenderer junitReports;
 
     public TestRunController(JdbcTestRunStore store, JdbcRunEventStore events, WebhookUrlValidator webhookUrls,
-            ConformanceService conformance) {
+            ConformanceService conformance, JUnitXmlReportRenderer junitReports) {
         this.store = store;
         this.events = events;
         this.webhookUrls = webhookUrls;
         this.conformance = conformance;
+        this.junitReports = junitReports;
     }
 
     @PostMapping
@@ -83,6 +87,11 @@ public class TestRunController {
     @GetMapping("/{runId}/conformance")
     public ConformanceEvaluation conformance(@PathVariable UUID runId) {
         return conformance.evaluate(new TestRunId(runId));
+    }
+
+    @GetMapping(value = "/{runId}/report/junit.xml", produces = MediaType.APPLICATION_XML_VALUE)
+    public String junitReport(@PathVariable UUID runId) {
+        return junitReports.render(conformance.requireFinalized(new TestRunId(runId)));
     }
 
     @PostMapping("/{runId}/finalize")

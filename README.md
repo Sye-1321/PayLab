@@ -90,6 +90,8 @@ for scenario behavior and [`docs/security.md`](docs/security.md) for trust bound
 Open runs are evaluated from their current evidence. A supported run can be finalized with
 `POST /test-runs/{runId}/finalize`; afterward, conformance requests return the persisted immutable
 evaluation snapshot. Other scenarios currently have no conformance evaluator and cannot be finalized.
+Finalized runs can be exported as JUnit XML at `GET /test-runs/{runId}/report/junit.xml` for CI systems
+that ingest test reports.
 
 ## Safety and scope
 
