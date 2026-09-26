@@ -13,6 +13,71 @@ The central question is:
 PayLab focuses on server-to-server payment collection with asynchronous webhooks. It does not
 process real money and is not an implementation of any specific payment service provider.
 
+## Getting started
+
+Prerequisites: Java 25 and Docker with Docker Compose. Maven does not need to be installed because
+the repository includes the Maven Wrapper. The Compose configuration is for local development only.
+
+1. Start PostgreSQL:
+
+   ```bash
+   docker compose up -d
+   ```
+
+   This starts PostgreSQL 18.4 on `localhost:5432` with database, username, and password all set to
+   `paylab` as local development defaults.
+
+2. Set an example local-only webhook signing secret in the shell that will start PayLab. Do not use
+   this example value in a shared or production environment.
+
+   PowerShell:
+
+   ```powershell
+   $env:PAYLAB_WEBHOOK_SIGNING_SECRET="local-dev-only-secret"
+   ```
+
+   Bash/zsh:
+
+   ```bash
+   export PAYLAB_WEBHOOK_SIGNING_SECRET="local-dev-only-secret"
+   ```
+
+3. Start PayLab.
+
+   Windows:
+
+   ```powershell
+   .\mvnw.cmd spring-boot:run
+   ```
+
+   macOS/Linux:
+
+   ```bash
+   ./mvnw spring-boot:run
+   ```
+
+   The application is available at `http://localhost:8080`.
+
+4. Create a test run to confirm the application is working:
+
+   ```bash
+   curl -X POST http://localhost:8080/test-runs \
+     -H "Content-Type: application/json" \
+     -d '{"scenario":"SAME_KEY_RETRY"}'
+   ```
+
+   A successful response returns a `runId`.
+
+| Environment variable | Purpose | Default |
+| --- | --- | --- |
+| `SPRING_DATASOURCE_URL` | PostgreSQL JDBC URL | `jdbc:postgresql://localhost:5432/paylab` |
+| `SPRING_DATASOURCE_USERNAME` | PostgreSQL username | `paylab` |
+| `SPRING_DATASOURCE_PASSWORD` | PostgreSQL password | `paylab` |
+| `PAYLAB_WEBHOOK_SIGNING_SECRET` | Webhook HMAC signing secret | required |
+
+Stop PostgreSQL while preserving its data with `docker compose down`. To remove the named volume
+and start with a fresh local database, run `docker compose down -v`.
+
 ## Why it exists
 
 Happy-path tests do not establish that an integration remains safe when a provider commits a

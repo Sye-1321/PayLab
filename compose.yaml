@@ -1,0 +1,19 @@
+services:
+  postgres:
+    image: postgres:18.4-bookworm
+    environment:
+      POSTGRES_DB: paylab
+      POSTGRES_USER: paylab
+      POSTGRES_PASSWORD: paylab
+    ports:
+      - "5432:5432"
+    volumes:
+      - paylab-postgres:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U paylab -d paylab"]
+      interval: 2s
+      timeout: 3s
+      retries: 15
+
+volumes:
+  paylab-postgres:
